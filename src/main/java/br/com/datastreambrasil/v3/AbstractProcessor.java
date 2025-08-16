@@ -14,7 +14,7 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -35,7 +35,8 @@ public abstract class AbstractProcessor {
     protected List<String> timestampFieldsConvert = new ArrayList<>();
     protected List<String> dateFieldsConvert = new ArrayList<>();
     protected List<String> timeFieldsConvert = new ArrayList<>();
-    protected final Map<String, SnowflakeRecord> buffer = new HashMap<>();
+    protected final Map<String, SnowflakeRecord> buffer = new LinkedHashMap<>();
+    protected boolean hashingSupport;
 
 
     protected static final String AFTER = "after";
@@ -47,6 +48,8 @@ public abstract class AbstractProcessor {
     protected static final String IHOP = "ih_op";
     protected static final String IHDATETIME = "ih_datetime";
     protected static final String IHBLOCKID = "ih_blockid";
+    protected static final String IH_PREVIOUS_HASH = "ih_previous_hash";
+    protected static final String IH_CURRENT_HASH = "ih_current_hash";
 
     protected enum debeziumOperation {
         d,
@@ -87,6 +90,7 @@ public abstract class AbstractProcessor {
         tableName = config.getString(SnowflakeSinkConnector.CFG_TABLE_NAME);
         ingestTableName = tableName + INGEST_SUFFIX;
         schemaName = config.getString(SnowflakeSinkConnector.CFG_SCHEMA_NAME);
+        hashingSupport = config.getBoolean(SnowflakeSinkConnector.CFG_HASHING_SUPPORT);
 
         timestampFieldsConvert.addAll(config.getList(SnowflakeSinkConnector.CFG_TIMESTAMP_FIELDS_CONVERT));
         dateFieldsConvert.addAll(config.getList(SnowflakeSinkConnector.CFG_DATE_FIELDS_CONVERT));
