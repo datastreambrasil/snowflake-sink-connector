@@ -1,6 +1,7 @@
 package br.com.datastreambrasil.v3;
 
 import br.com.datastreambrasil.v3.exception.InvalidStructException;
+import br.com.datastreambrasil.v3.model.SinkHashRecord;
 import br.com.datastreambrasil.v3.model.SnowflakeRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -34,6 +35,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.TimeZone;
 import java.util.UUID;
+import java.util.zip.CRC32;
 
 /**
  * CdcDbzSchemaProcessor receives SinkRecords using Struct with Schema in CDC Debezium format.
@@ -46,6 +48,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     private boolean flushHasDeletedRecords;
     private boolean flushHasInsertedRecords;
     private boolean flushHasUpdatedRecords;
+    private final CRC32 crc32 = new CRC32();
 
     @Override
     protected void extraConfigsOnStart(AbstractConfig config) {
@@ -87,28 +90,15 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 record.kafkaPartition(),
                 record.kafkaOffset(),
                 valueOP,
-                LocalDateTime.now(ZoneOffset.UTC)
+                LocalDateTime.now(ZoneOffset.UTC),
+                calculateHash(valueOP, valueRecord),
+                record
             );
 
             LOGGER.trace("Added record to buffer: {} with operation {}", recordToSnowflake, valueOP);
-            buffer.put(convertPKToStringKey(record), recordToSnowflake);
+            buffer.put(convertPKToStringKey(recordToSnowflake), recordToSnowflake);
+            cleanUpOldHashRecords(recordToSnowflake);
         }
-    }
-
-    private boolean validate(SinkRecord record) {
-        if (record.keySchema() == null || record.valueSchema() == null ||
-            !(record.key() instanceof Struct) || !(record.value() instanceof Struct)) {
-            LOGGER.error("Key and value must be Structs with schemas. Key: {}, Value: {}", record.key(), record.value());
-            return false;
-        }
-
-        if (record.topic() == null || record.kafkaPartition() == null) {
-            LOGGER.error("Null values for topic or kafkaPartition. Topic {}, KafkaPartition {}", record.topic(),
-                record.kafkaPartition());
-            return false;
-        }
-
-        return true;
     }
 
     @Override
@@ -232,7 +222,12 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     }
 
     private List<String> extractPK(SinkRecord record) {
-        if (pks.isEmpty()) {
+
+        if (hashingSupport) {
+            return new ArrayList<>(); //empty because we won't use normal PK in that case
+        }
+
+        if (pks.isEmpty() && record.keySchema() != null && record.keySchema().fields() != null) {
             for (Field field : record.keySchema().fields()) {
                 pks.add(field.name());
             }
@@ -242,8 +237,17 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     }
 
 
-    private String convertPKToStringKey(SinkRecord record) {
-        var keyStruct = (Struct) record.key();
+    private String convertPKToStringKey(SnowflakeRecord record) {
+
+        if (hashingSupport) {
+            if (debeziumOperation.d.toString().equalsIgnoreCase(record.op())) {
+                return record.hash().previousHash();
+            } else {
+                return record.hash().newHash();
+            }
+        }
+
+        var keyStruct = (Struct) record.originalRecord().key();
         var pkValues = new ArrayList<String>();
         for (String pk : pks) {
             var value = keyStruct.get(pk);
@@ -272,9 +276,14 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     }
 
     private String buildPkWhereClause(List<String> pks) {
-        return pks.stream()
-            .map(col -> String.format("%s.%s = %s.%s", "final", col, "ingest", col))
-            .reduce((a, b) -> a + " and " + b).orElseThrow();
+        if (hashingSupport) {
+            return String.format("%s.%s = %s.%s", "final", IH_CURRENT_HASH, "ingest", IH_PREVIOUS_HASH);
+        } else {
+            return pks.stream()
+                .map(col -> String.format("%s.%s = %s.%s", "final", col, "ingest", col))
+                .reduce((a, b) -> a + " and " + b).orElseThrow();
+        }
+
     }
 
     protected ByteArrayOutputStream prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable) throws Throwable {
@@ -323,6 +332,22 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     stringBuilder.append(strBuffer);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOFFSET)) {
                     var strBuffer = "\"" + recordInBuffer.offset() + "\"";
+                    stringBuilder.append(strBuffer);
+                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IH_CURRENT_HASH)) {
+                    String strBuffer;
+                    if (recordInBuffer.hash().newHash() == null) {
+                        strBuffer = "";
+                    } else {
+                        strBuffer = "\"" + recordInBuffer.hash().newHash() + "\"";
+                    }
+                    stringBuilder.append(strBuffer);
+                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IH_PREVIOUS_HASH)) {
+                    String strBuffer;
+                    if (recordInBuffer.hash().firstPreviousHash() == null) {
+                        strBuffer = "";
+                    } else {
+                        strBuffer = "\"" + recordInBuffer.hash().firstPreviousHash() + "\"";
+                    }
                     stringBuilder.append(strBuffer);
                 } else {
                     Object valueFromRecord = recordInBuffer.event().get(columnFromSnowflakeTable);
@@ -373,6 +398,52 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         return csvInMemory;
     }
 
+    protected SinkHashRecord calculateHash(String op, Struct record) {
+        if (!hashingSupport) {
+            return null;
+        }
+
+        SinkHashRecord hashRecord = null;
+
+        //creating the record, so we don't have the before struct
+        if (debeziumOperation.c.toString().equalsIgnoreCase(op) || debeziumOperation.r.toString().equalsIgnoreCase(op)) {
+            var hash = getHash(record.getStruct(AFTER));
+            hashRecord = new SinkHashRecord(hash, null, hash);
+        }
+
+        // we do have the before struct but don't have after struct
+        if (debeziumOperation.d.toString().equalsIgnoreCase(op)) {
+            var previousHash = getHash(record.getStruct(BEFORE));
+            String firstSeenHash = null;
+            if (buffer.containsKey(previousHash)) {
+                firstSeenHash = buffer.get(previousHash).hash().firstPreviousHash();
+            }
+            hashRecord = new SinkHashRecord(firstSeenHash, previousHash, null);
+        }
+
+        // we do have the before struct and after struct
+        if (debeziumOperation.u.toString().equalsIgnoreCase(op)) {
+            var previousHash = getHash(record.getStruct(BEFORE));
+            String firstSeenHash = null;
+            if (buffer.containsKey(previousHash)) {
+                firstSeenHash = buffer.get(previousHash).hash().firstPreviousHash();
+            }
+            hashRecord = new SinkHashRecord(firstSeenHash, previousHash, getHash(record.getStruct(AFTER)));
+        }
+
+        if (hashRecord == null) {
+            throw new InvalidStructException("Invalid operation type: " + op);
+        }
+
+        return hashRecord;
+    }
+
+    private String getHash(Object o) {
+        crc32.reset();
+        crc32.update(o.toString().getBytes());
+        return Long.toHexString(crc32.getValue());
+    }
+
 
     private boolean containsAny(String checkValue, List<String> values) {
         for (String s : values) {
@@ -382,5 +453,27 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         }
 
         return false;
+    }
+
+    private boolean validate(SinkRecord record) {
+        if (record.keySchema() == null || record.valueSchema() == null ||
+            !(record.key() instanceof Struct) || !(record.value() instanceof Struct)) {
+            LOGGER.error("Key and value must be Structs with schemas. Key: {}, Value: {}", record.key(), record.value());
+            return false;
+        }
+
+        if (record.topic() == null || record.kafkaPartition() == null) {
+            LOGGER.error("Null values for topic or kafkaPartition. Topic {}, KafkaPartition {}", record.topic(),
+                record.kafkaPartition());
+            return false;
+        }
+
+        return true;
+    }
+
+    private void cleanUpOldHashRecords(SnowflakeRecord record) {
+        if (hashingSupport && debeziumOperation.u.toString().equalsIgnoreCase(record.op())) {
+            buffer.remove(record.hash().previousHash());
+        }
     }
 }
