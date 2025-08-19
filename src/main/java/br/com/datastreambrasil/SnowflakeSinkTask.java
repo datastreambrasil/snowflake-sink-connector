@@ -1,17 +1,5 @@
 package br.com.datastreambrasil;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.OutputStream;
-import java.io.StringReader;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Map;
-import java.util.Properties;
-import java.util.TreeMap;
-import java.util.UUID;
 import net.snowflake.client.jdbc.SnowflakeConnection;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -19,6 +7,12 @@ import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.kafka.connect.sink.SinkTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.util.*;
 
 public class SnowflakeSinkTask extends SinkTask {
 
@@ -38,6 +32,7 @@ public class SnowflakeSinkTask extends SinkTask {
     private static final String IHPARTITION = "ih_partition";
     private static final String IHOP = "ih_op";
     private static final String DELETE = "d";
+    private List<String> columnsFromTable;
 
     @Override
     public String version() {
@@ -118,7 +113,7 @@ public class SnowflakeSinkTask extends SinkTask {
 
 
             try (var csvToInsert = prepareOrderedColumnsBasedOnTargetTable();
-                 var inputStream = new ByteArrayInputStream(csvToInsert.toByteArray())){
+                 var inputStream = new ByteArrayInputStream(csvToInsert.toByteArray())) {
                 snowflakeConnection.uploadStream(stageName, "/", inputStream,
                         destFileName, true);
                 try (var stmt = connection.createStatement()) {
@@ -131,12 +126,12 @@ public class SnowflakeSinkTask extends SinkTask {
 
         } catch (Throwable e) {
             try {
-                try (var stmt = connection.createStatement()){
+                try (var stmt = connection.createStatement()) {
                     String removeFileFromStage = String.format("REMOVE @%s/%s.gz", stageName, destFileName);
                     stmt.execute(removeFileFromStage);
                 }
-            }catch (Throwable e2){
-                throw new RuntimeException("Error while removing file ["+destFileName+"] from stage " + stageName, e2);
+            } catch (Throwable e2) {
+                throw new RuntimeException("Error while removing file [" + destFileName + "] from stage " + stageName, e2);
             }
 
             LOGGER.error("Error while flushing Snowflake connector", e);
@@ -161,14 +156,17 @@ public class SnowflakeSinkTask extends SinkTask {
     private ByteArrayOutputStream prepareOrderedColumnsBasedOnTargetTable() throws Throwable {
         var metadata = connection.getMetaData();
 
-        var columnsFromTable = new ArrayList<String>();
-        try (var rsColumns = metadata.getColumns(null, schemaName.toUpperCase(), tableName.toUpperCase(), null)) {
-            while (rsColumns.next()) {
-                columnsFromTable.add(rsColumns.getString("COLUMN_NAME").toUpperCase());
+        if (columnsFromTable == null) {
+            columnsFromTable = new ArrayList<>();
+            try (var rsColumns = metadata.getColumns(null, schemaName.toUpperCase(), tableName.toUpperCase(), null)) {
+                while (rsColumns.next()) {
+                    columnsFromTable.add(rsColumns.getString("COLUMN_NAME").toUpperCase());
+                }
             }
         }
-        if (columnsFromTable.isEmpty()){
-            throw new RuntimeException("Empty columns returned from target table "+tableName+", schema "+ schemaName);
+
+        if (columnsFromTable.isEmpty()) {
+            throw new RuntimeException("Empty columns returned from target table " + tableName + ", schema " + schemaName);
         }
 
         LOGGER.debug("Columns mapped from target table: {}", String.join(",", columnsFromTable));
@@ -183,13 +181,13 @@ public class SnowflakeSinkTask extends SinkTask {
                         var strBuffer = "\"" + valueFromRecord + "\"";
                         csvInMemory.writeBytes(strBuffer.getBytes());
                     }
-                }else if (recordInBuffer.containsKey(columnsFromTable.get(i).toLowerCase())) {
+                } else if (recordInBuffer.containsKey(columnsFromTable.get(i).toLowerCase())) {
                     var valueFromRecord = recordInBuffer.get(columnsFromTable.get(i).toLowerCase());
                     if (valueFromRecord != null) {
                         var strBuffer = "\"" + valueFromRecord + "\"";
                         csvInMemory.writeBytes(strBuffer.getBytes());
                     }
-                }else{
+                } else {
                     LOGGER.warn("Column {} not found on buffer, inserted empty value", columnsFromTable.get(i));
                 }
 
