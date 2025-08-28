@@ -9,32 +9,15 @@ import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.sink.SinkRecord;
-import org.quartz.JobBuilder;
-import org.quartz.JobDataMap;
-import org.quartz.Scheduler;
-import org.quartz.SchedulerException;
-import org.quartz.SimpleScheduleBuilder;
-import org.quartz.TriggerBuilder;
+import org.quartz.*;
 import org.quartz.impl.StdSchedulerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.TimeZone;
-import java.util.UUID;
+import java.time.*;
+import java.util.*;
 import java.util.zip.CRC32;
 
 /**
@@ -85,14 +68,14 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
 
             var recordToSnowflake = new SnowflakeRecord(
-                debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER),
-                record.topic(),
-                record.kafkaPartition(),
-                record.kafkaOffset(),
-                valueOP,
-                LocalDateTime.now(ZoneOffset.UTC),
-                calculateHash(valueOP, valueRecord),
-                record
+                    debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER),
+                    record.topic(),
+                    record.kafkaPartition(),
+                    record.kafkaOffset(),
+                    valueOP,
+                    LocalDateTime.now(ZoneOffset.UTC),
+                    calculateHash(valueOP, valueRecord),
+                    record
             );
 
             LOGGER.trace("Added record to buffer: {} with operation {}", recordToSnowflake, valueOP);
@@ -111,7 +94,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         var destFileName = UUID.randomUUID().toString();
         try {
             LOGGER.debug("Preparing to send {} records from buffer. To stage {} and table {}", buffer.size(), stageName,
-                tableName);
+                    tableName);
 
             var columnsFromMetadata = columnsIngestTable;
             var blockID = UUID.randomUUID().toString();
@@ -121,7 +104,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
                 var startTimeUpload = System.currentTimeMillis();
                 snowflakeConnection.uploadStream(stageName, "/", inputStream,
-                    destFileName, true);
+                        destFileName, true);
                 var endTimeUpload = System.currentTimeMillis();
                 LOGGER.debug("Uploaded {} records in {} ms", buffer.size(), endTimeUpload - startTimeUpload);
 
@@ -130,7 +113,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
                     //copy everything to ingest
                     String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName, String.join(",", columnsFromMetadata),
-                        stageName, destFileName);
+                            stageName, destFileName);
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
                     stmt.executeUpdate(copyInto);
 
@@ -138,11 +121,11 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     if (flushHasInsertedRecords || flushHasUpdatedRecords) {
                         //insert/update in final table
                         String merge = String.format("MERGE INTO %s AS final USING (SELECT * EXCLUDE (%s) FROM %s WHERE ih_blockid = '%s' and ih_op in ('c', 'r', 'u')) AS ingest ON %s " +
-                                "WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s) " +
-                                "WHEN MATCHED THEN UPDATE SET %s",
-                            tableName, buildExcludeColumns(), ingestTableName, blockID,
-                            buildPkWhereClause(pks), String.join(",", columnsFinalTable), String.join(",", columnsFinalTable.stream().map(c -> "ingest." + c).toList()),
-                            buildUpdateColumns());
+                                        "WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s) " +
+                                        "WHEN MATCHED THEN UPDATE SET %s",
+                                tableName, buildExcludeColumns(), ingestTableName, blockID,
+                                buildPkWhereClause(pks), String.join(",", columnsFinalTable), String.join(",", columnsFinalTable.stream().map(c -> "ingest." + c).toList()),
+                                buildUpdateColumns());
                         LOGGER.debug("Merging statement to final table: {}", merge);
                         stmt.executeUpdate(merge);
                     }
@@ -150,9 +133,9 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     //delete from final table
                     if (flushHasDeletedRecords) {
                         String deleteFromFinalTable = String.format(
-                            "DELETE FROM %s as final USING (SELECT %s FROM %s WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest WHERE %s",
-                            tableName, String.join(",", pks), ingestTableName, blockID,
-                            buildPkWhereClause(pks));
+                                "DELETE FROM %s as final USING (SELECT %s FROM %s WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest WHERE %s",
+                                tableName, String.join(",", pks), ingestTableName, blockID,
+                                buildPkWhereClause(pks));
                         LOGGER.debug("Deleting statement from final table: {}", deleteFromFinalTable);
                         stmt.executeUpdate(deleteFromFinalTable);
                     }
@@ -212,11 +195,11 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         var schedulerFactory = new StdSchedulerFactory(props);
         scheduler = schedulerFactory.getScheduler();
         var job = JobBuilder.newJob(CleanupJob.class).withIdentity("cleanupjob")
-            .setJobData(new JobDataMap(jobData))
-            .build();
+                .setJobData(new JobDataMap(jobData))
+                .build();
         var trigger = TriggerBuilder.newTrigger().withIdentity("trigger_cleanupjob")
-            .withSchedule(SimpleScheduleBuilder.repeatSecondlyForever((int) durationCleanup.getSeconds()))
-            .build();
+                .withSchedule(SimpleScheduleBuilder.repeatSecondlyForever((int) durationCleanup.getSeconds()))
+                .build();
         scheduler.scheduleJob(job, trigger);
         scheduler.start();
     }
@@ -280,8 +263,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             return String.format("%s.%s = %s.%s", "final", IH_CURRENT_HASH, "ingest", IH_PREVIOUS_HASH);
         } else {
             return pks.stream()
-                .map(col -> String.format("%s.%s = %s.%s", "final", col, "ingest", col))
-                .reduce((a, b) -> a + " and " + b).orElseThrow();
+                    .map(col -> String.format("%s.%s = %s.%s", "final", col, "ingest", col))
+                    .reduce((a, b) -> a + " and " + b).orElseThrow();
         }
 
     }
@@ -343,10 +326,10 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     stringBuilder.append(strBuffer);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IH_PREVIOUS_HASH)) {
                     String strBuffer;
-                    if (recordInBuffer.hash().firstPreviousHash() == null) {
+                    if (recordInBuffer.hash().firstSeenHash() == null) {
                         strBuffer = "";
                     } else {
-                        strBuffer = "\"" + recordInBuffer.hash().firstPreviousHash() + "\"";
+                        strBuffer = "\"" + recordInBuffer.hash().firstSeenHash() + "\"";
                     }
                     stringBuilder.append(strBuffer);
                 } else {
@@ -355,12 +338,12 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                         if (containsAny(columnFromSnowflakeTable, timestampFieldsConvert)) {
                             var valueFromRecordAsLong = (long) valueFromRecord;
                             valueFromRecord = LocalDateTime.ofInstant(Instant.ofEpochMilli(valueFromRecordAsLong),
-                                TimeZone.getDefault().toZoneId()).toString();
+                                    TimeZone.getDefault().toZoneId()).toString();
                         } else if (containsAny(columnFromSnowflakeTable, dateFieldsConvert)) {
                             var valueFromRecordAsLong = (int) valueFromRecord;
                             var daysInSeconds = valueFromRecordAsLong * 24 * 60 * 60;
                             valueFromRecord = LocalDate.ofInstant(Instant.ofEpochSecond(daysInSeconds),
-                                TimeZone.getDefault().toZoneId()).toString();
+                                    TimeZone.getDefault().toZoneId()).toString();
                         } else if (containsAny(columnFromSnowflakeTable, timeFieldsConvert)) {
                             var valueFromRecordAsLong = (long) valueFromRecord;
                             valueFromRecord = LocalTime.ofNanoOfDay(valueFromRecordAsLong).toString();
@@ -408,27 +391,19 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         //creating the record, so we don't have the before struct
         if (debeziumOperation.c.toString().equalsIgnoreCase(op) || debeziumOperation.r.toString().equalsIgnoreCase(op)) {
             var hash = getHash(record.getStruct(AFTER));
-            hashRecord = new SinkHashRecord(hash, null, hash);
+            hashRecord = new SinkHashRecord(getFirstSeenHash(hash), null, hash);
         }
 
         // we do have the before struct but don't have after struct
         if (debeziumOperation.d.toString().equalsIgnoreCase(op)) {
             var previousHash = getHash(record.getStruct(BEFORE));
-            String firstSeenHash = null;
-            if (buffer.containsKey(previousHash)) {
-                firstSeenHash = buffer.get(previousHash).hash().firstPreviousHash();
-            }
-            hashRecord = new SinkHashRecord(firstSeenHash, previousHash, null);
+            hashRecord = new SinkHashRecord(getFirstSeenHash(previousHash), previousHash, null);
         }
 
         // we do have the before struct and after struct
         if (debeziumOperation.u.toString().equalsIgnoreCase(op)) {
             var previousHash = getHash(record.getStruct(BEFORE));
-            String firstSeenHash = null;
-            if (buffer.containsKey(previousHash)) {
-                firstSeenHash = buffer.get(previousHash).hash().firstPreviousHash();
-            }
-            hashRecord = new SinkHashRecord(firstSeenHash, previousHash, getHash(record.getStruct(AFTER)));
+            hashRecord = new SinkHashRecord(getFirstSeenHash(previousHash), previousHash, getHash(record.getStruct(AFTER)));
         }
 
         if (hashRecord == null) {
@@ -436,6 +411,12 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         }
 
         return hashRecord;
+    }
+
+    private String getFirstSeenHash(String searchHash) {
+        var foundRecord = buffer.get(searchHash);
+        return foundRecord != null && foundRecord.hash() != null && foundRecord.hash().firstSeenHash() != null ?
+                foundRecord.hash().firstSeenHash() : searchHash;
     }
 
     private String getHash(Object o) {
@@ -457,14 +438,14 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     private boolean validate(SinkRecord record) {
         if (record.keySchema() == null || record.valueSchema() == null ||
-            !(record.key() instanceof Struct) || !(record.value() instanceof Struct)) {
+                !(record.key() instanceof Struct) || !(record.value() instanceof Struct)) {
             LOGGER.error("Key and value must be Structs with schemas. Key: {}, Value: {}", record.key(), record.value());
             return false;
         }
 
         if (record.topic() == null || record.kafkaPartition() == null) {
             LOGGER.error("Null values for topic or kafkaPartition. Topic {}, KafkaPartition {}", record.topic(),
-                record.kafkaPartition());
+                    record.kafkaPartition());
             return false;
         }
 
