@@ -9,32 +9,15 @@ import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.sink.SinkRecord;
-import org.quartz.JobBuilder;
-import org.quartz.JobDataMap;
-import org.quartz.Scheduler;
-import org.quartz.SchedulerException;
-import org.quartz.SimpleScheduleBuilder;
-import org.quartz.TriggerBuilder;
+import org.quartz.*;
 import org.quartz.impl.StdSchedulerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.TimeZone;
-import java.util.UUID;
+import java.time.*;
+import java.util.*;
 import java.util.zip.CRC32;
 
 /**
@@ -86,11 +69,15 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
             var recordToSnowflake = new SnowflakeRecord(
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> ec98c67 (Adding hashing support when there is no PK)
                     debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER),
                     record.topic(),
                     record.kafkaPartition(),
                     record.kafkaOffset(),
                     valueOP,
+<<<<<<< HEAD
                     LocalDateTime.now(ZoneOffset.UTC)
 =======
                 debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER),
@@ -102,6 +89,11 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 calculateHash(valueOP, valueRecord),
                 record
 >>>>>>> de38dfb (feat: hashing when there is no pk in table)
+=======
+                    LocalDateTime.now(ZoneOffset.UTC),
+                    calculateHash(valueOP, valueRecord),
+                    record
+>>>>>>> ec98c67 (Adding hashing support when there is no PK)
             );
 
             LOGGER.trace("Added record to buffer: {} with operation {}", recordToSnowflake, valueOP);
@@ -313,8 +305,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             return String.format("%s.%s = %s.%s", "final", IH_CURRENT_HASH, "ingest", IH_PREVIOUS_HASH);
         } else {
             return pks.stream()
-                .map(col -> String.format("%s.%s = %s.%s", "final", col, "ingest", col))
-                .reduce((a, b) -> a + " and " + b).orElseThrow();
+                    .map(col -> String.format("%s.%s = %s.%s", "final", col, "ingest", col))
+                    .reduce((a, b) -> a + " and " + b).orElseThrow();
         }
 
 >>>>>>> de38dfb (feat: hashing when there is no pk in table)
@@ -377,10 +369,10 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     stringBuilder.append(strBuffer);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IH_PREVIOUS_HASH)) {
                     String strBuffer;
-                    if (recordInBuffer.hash().firstPreviousHash() == null) {
+                    if (recordInBuffer.hash().firstSeenHash() == null) {
                         strBuffer = "";
                     } else {
-                        strBuffer = "\"" + recordInBuffer.hash().firstPreviousHash() + "\"";
+                        strBuffer = "\"" + recordInBuffer.hash().firstSeenHash() + "\"";
                     }
                     stringBuilder.append(strBuffer);
                 } else {
@@ -452,27 +444,19 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         //creating the record, so we don't have the before struct
         if (debeziumOperation.c.toString().equalsIgnoreCase(op) || debeziumOperation.r.toString().equalsIgnoreCase(op)) {
             var hash = getHash(record.getStruct(AFTER));
-            hashRecord = new SinkHashRecord(hash, null, hash);
+            hashRecord = new SinkHashRecord(getFirstSeenHash(hash), null, hash);
         }
 
         // we do have the before struct but don't have after struct
         if (debeziumOperation.d.toString().equalsIgnoreCase(op)) {
             var previousHash = getHash(record.getStruct(BEFORE));
-            String firstSeenHash = null;
-            if (buffer.containsKey(previousHash)) {
-                firstSeenHash = buffer.get(previousHash).hash().firstPreviousHash();
-            }
-            hashRecord = new SinkHashRecord(firstSeenHash, previousHash, null);
+            hashRecord = new SinkHashRecord(getFirstSeenHash(previousHash), previousHash, null);
         }
 
         // we do have the before struct and after struct
         if (debeziumOperation.u.toString().equalsIgnoreCase(op)) {
             var previousHash = getHash(record.getStruct(BEFORE));
-            String firstSeenHash = null;
-            if (buffer.containsKey(previousHash)) {
-                firstSeenHash = buffer.get(previousHash).hash().firstPreviousHash();
-            }
-            hashRecord = new SinkHashRecord(firstSeenHash, previousHash, getHash(record.getStruct(AFTER)));
+            hashRecord = new SinkHashRecord(getFirstSeenHash(previousHash), previousHash, getHash(record.getStruct(AFTER)));
         }
 
         if (hashRecord == null) {
@@ -480,6 +464,12 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         }
 
         return hashRecord;
+    }
+
+    private String getFirstSeenHash(String searchHash) {
+        var foundRecord = buffer.get(searchHash);
+        return foundRecord != null && foundRecord.hash() != null && foundRecord.hash().firstSeenHash() != null ?
+                foundRecord.hash().firstSeenHash() : searchHash;
     }
 
     private String getHash(Object o) {
@@ -501,14 +491,14 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     private boolean validate(SinkRecord record) {
         if (record.keySchema() == null || record.valueSchema() == null ||
-            !(record.key() instanceof Struct) || !(record.value() instanceof Struct)) {
+                !(record.key() instanceof Struct) || !(record.value() instanceof Struct)) {
             LOGGER.error("Key and value must be Structs with schemas. Key: {}, Value: {}", record.key(), record.value());
             return false;
         }
 
         if (record.topic() == null || record.kafkaPartition() == null) {
             LOGGER.error("Null values for topic or kafkaPartition. Topic {}, KafkaPartition {}", record.topic(),
-                record.kafkaPartition());
+                    record.kafkaPartition());
             return false;
         }
 
