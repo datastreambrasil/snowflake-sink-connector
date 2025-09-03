@@ -29,6 +29,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_REDIS_PORT = "redis_port";
     protected static final String CFG_REDIS_KEY_TTL_SECONDS = "redis_key_ttl_seconds";
     protected static final String CFG_PROFILE = "profile";
+    protected static final String CFG_HASHING_SUPPORT = "hasing_support";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -83,6 +84,9 @@ public class SnowflakeSinkConnector extends SinkConnector {
         .define(CFG_PROFILE, ConfigDef.Type.STRING, "cdc_schema",
             ConfigDef.Importance.HIGH,
             "Profile to use for the connector. Might be one of: cdc_schema, cdc_schemaless, bulk_schemaless")
+        .define(CFG_HASHING_SUPPORT, ConfigDef.Type.BOOLEAN, false,
+            ConfigDef.Importance.MEDIUM,
+            "When true, we will calculate hash for before and after struct and use it if PK does not exist. This is a sort of surrogate key for the record.")
         .define(CFG_TRUNCATE_WHEN_NODATA_AFTER_SECONDS, ConfigDef.Type.INT, 1800,
             ConfigDef.Importance.HIGH,
             "If we don't receive any event for this amount of time, we will truncate the table in snowflake");
