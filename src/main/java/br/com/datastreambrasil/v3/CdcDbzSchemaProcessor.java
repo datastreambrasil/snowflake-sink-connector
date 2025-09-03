@@ -9,15 +9,32 @@ import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.sink.SinkRecord;
-import org.quartz.*;
+import org.quartz.JobBuilder;
+import org.quartz.JobDataMap;
+import org.quartz.Scheduler;
+import org.quartz.SchedulerException;
+import org.quartz.SimpleScheduleBuilder;
+import org.quartz.TriggerBuilder;
 import org.quartz.impl.StdSchedulerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
-import java.time.*;
-import java.util.*;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.TimeZone;
+import java.util.UUID;
 import java.util.zip.CRC32;
 
 /**
@@ -68,32 +85,14 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
 
             var recordToSnowflake = new SnowflakeRecord(
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> ec98c67 (Adding hashing support when there is no PK)
                     debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER),
                     record.topic(),
                     record.kafkaPartition(),
                     record.kafkaOffset(),
                     valueOP,
-<<<<<<< HEAD
-                    LocalDateTime.now(ZoneOffset.UTC)
-=======
-                debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER),
-                record.topic(),
-                record.kafkaPartition(),
-                record.kafkaOffset(),
-                valueOP,
-                LocalDateTime.now(ZoneOffset.UTC),
-                calculateHash(valueOP, valueRecord),
-                record
->>>>>>> de38dfb (feat: hashing when there is no pk in table)
-=======
                     LocalDateTime.now(ZoneOffset.UTC),
                     calculateHash(valueOP, valueRecord),
                     record
->>>>>>> ec98c67 (Adding hashing support when there is no PK)
             );
 
             LOGGER.trace("Added record to buffer: {} with operation {}", recordToSnowflake, valueOP);
@@ -102,25 +101,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         }
     }
 
-<<<<<<< HEAD
-    private boolean validate(SinkRecord record) {
-        if (record.keySchema() == null || record.valueSchema() == null ||
-                !(record.key() instanceof Struct) || !(record.value() instanceof Struct)) {
-            LOGGER.error("Key and value must be Structs with schemas. Key: {}, Value: {}", record.key(), record.value());
-            return false;
-        }
-
-        if (record.topic() == null || record.kafkaPartition() == null) {
-            LOGGER.error("Null values for topic or kafkaPartition. Topic {}, KafkaPartition {}", record.topic(),
-                    record.kafkaPartition());
-            return false;
-        }
-
-        return true;
-    }
-
-=======
->>>>>>> de38dfb (feat: hashing when there is no pk in table)
     @Override
     protected void flush(Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
         var startTime = System.currentTimeMillis();
@@ -296,11 +276,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     }
 
     private String buildPkWhereClause(List<String> pks) {
-<<<<<<< HEAD
-        return pks.stream()
-                .map(col -> String.format("%s.%s = %s.%s", "final", col, "ingest", col))
-                .reduce((a, b) -> a + " and " + b).orElseThrow();
-=======
         if (hashingSupport) {
             return String.format("%s.%s = %s.%s", "final", IH_CURRENT_HASH, "ingest", IH_PREVIOUS_HASH);
         } else {
@@ -309,7 +284,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     .reduce((a, b) -> a + " and " + b).orElseThrow();
         }
 
->>>>>>> de38dfb (feat: hashing when there is no pk in table)
     }
 
     protected ByteArrayOutputStream prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable) throws Throwable {
