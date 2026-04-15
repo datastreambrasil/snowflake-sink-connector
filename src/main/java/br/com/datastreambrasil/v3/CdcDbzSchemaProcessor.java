@@ -17,8 +17,10 @@ import org.quartz.SimpleScheduleBuilder;
 import org.quartz.TriggerBuilder;
 import org.quartz.impl.StdSchedulerFactory;
 
+import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -96,7 +98,11 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             );
 
             LOGGER.trace("Added record to buffer: {} with operation {}", recordToSnowflake, valueOP);
-            buffer.put(UUID.randomUUID().toString(), recordToSnowflake);
+            // Antes a chave era sempre UUID aleatório, então dois eventos da mesma PK nunca
+            // se sobrescreviam e o buffer inchava até o flush. Usando a PK como chave (ou UUID
+            // só no modo hashing, onde duplicatas legítimas precisam coexistir), o evento mais
+            // recente substitui o anterior e o buffer fica do tamanho real do trabalho pendente.
+            buffer.put(convertPKToStringKey(recordToSnowflake), recordToSnowflake);
             cleanUpOldHashRecords(recordToSnowflake);
         }
     }
@@ -290,122 +296,122 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         var startTime = System.currentTimeMillis();
         var csvInMemory = new ByteArrayOutputStream();
-        var stringBuilder = new StringBuilder();
 
         flushHasDeletedRecords = false;
         flushHasUpdatedRecords = false;
         flushHasInsertedRecords = false;
 
-        boolean loggedDebugForFirstLine = false;
-        for (var recordInBuffer : buffer.values()) {
-            var count = 0;
-            var op = recordInBuffer.op();
+        // O OOM em produção acontecia aqui: o CSV inteiro era montado num StringBuilder e só
+        // depois convertido em bytes. StringBuilder guarda char[] (2 bytes por caractere) e
+        // ainda dobra o array quando precisa crescer, ou seja, por um momento temos duas
+        // cópias gigantes na heap, e a cópia final do toString().getBytes() ainda duplica de
+        // novo. Com um registro muito grande isso estourava o limite de ~2 GB de array do JVM.
+        // Escrevendo direto em bytes pelo Writer/OutputStream, pulamos o char[] intermediário,
+        // evitamos o toString() final e reduzimos bastante o pico de memória.
+        try (var writer = new BufferedWriter(new OutputStreamWriter(csvInMemory, StandardCharsets.UTF_8))) {
+            boolean loggedDebugForFirstLine = false;
+            for (var recordInBuffer : buffer.values()) {
+                var op = recordInBuffer.op();
 
-            if (debeziumOperation.d.toString().equalsIgnoreCase(op)) {
-                flushHasDeletedRecords = true;
-            }
-
-            if (debeziumOperation.c.toString().equalsIgnoreCase(op) || debeziumOperation.r.toString().equalsIgnoreCase(op)) {
-                flushHasInsertedRecords = true;
-            }
-
-            if (debeziumOperation.u.toString().equalsIgnoreCase(op)) {
-                flushHasUpdatedRecords = true;
-            }
-
-            for (String columnFromSnowflakeTable : columnsFromTable) {
-
-                if (columnFromSnowflakeTable.equalsIgnoreCase(IHBLOCKID)) {
-                    var strBuffer = "\"" + blockID + "\"";
-                    stringBuilder.append(strBuffer);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOP)) {
-                    var strBuffer = "\"" + recordInBuffer.op() + "\"";
-                    stringBuilder.append(strBuffer);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHTOPIC)) {
-                    var strBuffer = "\"" + recordInBuffer.topic() + "\"";
-                    stringBuilder.append(strBuffer);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHDATETIME)) {
-                    var strBuffer = "\"" + recordInBuffer.timestamp() + "\"";
-                    stringBuilder.append(strBuffer);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHPARTITION)) {
-                    var strBuffer = "\"" + recordInBuffer.partition() + "\"";
-                    stringBuilder.append(strBuffer);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOFFSET)) {
-                    var strBuffer = "\"" + recordInBuffer.offset() + "\"";
-                    stringBuilder.append(strBuffer);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IH_CURRENT_HASH)) {
-                    String strBuffer;
-                    if (recordInBuffer.hash().newHash() == null) {
-                        strBuffer = "";
-                    } else {
-                        strBuffer = "\"" + recordInBuffer.hash().newHash() + "\"";
-                    }
-                    stringBuilder.append(strBuffer);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IH_PREVIOUS_HASH)) {
-                    String strBuffer;
-                    if (recordInBuffer.hash().firstSeenHash() == null) {
-                        strBuffer = "";
-                    } else {
-                        strBuffer = "\"" + recordInBuffer.hash().firstSeenHash() + "\"";
-                    }
-                    stringBuilder.append(strBuffer);
-                } else {
-                    var fieldCaseInsensitive = recordInBuffer.event().schema().fields().stream().filter(field ->
-                            field.name().equalsIgnoreCase(columnFromSnowflakeTable)).findFirst();
-                    String searchColumn;
-                    if (fieldCaseInsensitive.isEmpty()) {
-                        LOGGER.warn("Column {} not found on record schema, fallback to snowflake original column name", columnFromSnowflakeTable);
-                        searchColumn = columnFromSnowflakeTable;
-                    } else {
-                        searchColumn = fieldCaseInsensitive.get().name();
-                    }
-
-                    Object valueFromRecord = recordInBuffer.event().get(searchColumn);
-                    if (valueFromRecord != null) {
-                        if (containsAny(columnFromSnowflakeTable, timestampFieldsConvert)) {
-                            var valueFromRecordAsLong = (long) valueFromRecord;
-                            valueFromRecord = LocalDateTime.ofInstant(Instant.ofEpochMilli(valueFromRecordAsLong),
-                                    TimeZone.getDefault().toZoneId()).toString();
-                        } else if (containsAny(columnFromSnowflakeTable, dateFieldsConvert)) {
-                            var valueFromRecordAsLong = (int) valueFromRecord;
-                            var daysInSeconds = valueFromRecordAsLong * 24 * 60 * 60;
-                            valueFromRecord = LocalDate.ofInstant(Instant.ofEpochSecond(daysInSeconds),
-                                    TimeZone.getDefault().toZoneId()).toString();
-                        } else if (containsAny(columnFromSnowflakeTable, timeFieldsConvert)) {
-                            var valueFromRecordAsLong = (long) valueFromRecord;
-                            valueFromRecord = LocalTime.ofNanoOfDay(valueFromRecordAsLong).toString();
-                        }
-
-                        valueFromRecord = valueFromRecord.toString().replaceAll("\"", "\"\"");
-                        var strBuffer = "\"" + valueFromRecord + "\"";
-                        stringBuilder.append(strBuffer);
-
-                    } else {
-                        LOGGER.warn("Column {} not found on buffer, inserted empty value", columnFromSnowflakeTable);
-                    }
+                if (debeziumOperation.d.toString().equalsIgnoreCase(op)) {
+                    flushHasDeletedRecords = true;
+                }
+                if (debeziumOperation.c.toString().equalsIgnoreCase(op) || debeziumOperation.r.toString().equalsIgnoreCase(op)) {
+                    flushHasInsertedRecords = true;
+                }
+                if (debeziumOperation.u.toString().equalsIgnoreCase(op)) {
+                    flushHasUpdatedRecords = true;
                 }
 
-                if (count < columnsFromTable.size() - 1) {
-                    stringBuilder.append(",");
+                var captureFirstLine = !loggedDebugForFirstLine && LOGGER.isDebugEnabled();
+                var firstLineBuf = captureFirstLine ? new StringBuilder() : null;
+
+                var count = 0;
+                for (String columnFromSnowflakeTable : columnsFromTable) {
+                    String cell = renderCell(columnFromSnowflakeTable, recordInBuffer, blockID);
+                    if (cell != null && !cell.isEmpty()) {
+                        writer.write(cell);
+                        if (firstLineBuf != null) firstLineBuf.append(cell);
+                    }
+                    if (count < columnsFromTable.size() - 1) {
+                        writer.write(',');
+                        if (firstLineBuf != null) firstLineBuf.append(',');
+                    }
+                    count++;
                 }
+                writer.write('\n');
 
-                count++;
-            }
-
-
-            stringBuilder.append("\n");
-            if (!loggedDebugForFirstLine && LOGGER.isDebugEnabled()) {
-                LOGGER.debug("First lines of csv: {}", stringBuilder);
-                loggedDebugForFirstLine = true;
+                if (firstLineBuf != null) {
+                    firstLineBuf.append('\n');
+                    LOGGER.debug("First lines of csv: {}", firstLineBuf);
+                    loggedDebugForFirstLine = true;
+                }
             }
         }
 
-        if (!stringBuilder.isEmpty()) {
-            csvInMemory.write(stringBuilder.toString().getBytes(StandardCharsets.UTF_8));
-        }
         var endTime = System.currentTimeMillis();
-        LOGGER.debug("Prepared csv in memory in {} ms", endTime - startTime);
+        LOGGER.debug("Prepared csv in memory in {} ms, size {} bytes", endTime - startTime, csvInMemory.size());
         return csvInMemory;
+    }
+
+    private String renderCell(String column, SnowflakeRecord recordInBuffer, String blockID) {
+        if (column.equalsIgnoreCase(IHBLOCKID)) {
+            return "\"" + blockID + "\"";
+        }
+        if (column.equalsIgnoreCase(IHOP)) {
+            return "\"" + recordInBuffer.op() + "\"";
+        }
+        if (column.equalsIgnoreCase(IHTOPIC)) {
+            return "\"" + recordInBuffer.topic() + "\"";
+        }
+        if (column.equalsIgnoreCase(IHDATETIME)) {
+            return "\"" + recordInBuffer.timestamp() + "\"";
+        }
+        if (column.equalsIgnoreCase(IHPARTITION)) {
+            return "\"" + recordInBuffer.partition() + "\"";
+        }
+        if (column.equalsIgnoreCase(IHOFFSET)) {
+            return "\"" + recordInBuffer.offset() + "\"";
+        }
+        if (column.equalsIgnoreCase(IH_CURRENT_HASH)) {
+            return recordInBuffer.hash().newHash() == null ? "" : "\"" + recordInBuffer.hash().newHash() + "\"";
+        }
+        if (column.equalsIgnoreCase(IH_PREVIOUS_HASH)) {
+            return recordInBuffer.hash().firstSeenHash() == null ? "" : "\"" + recordInBuffer.hash().firstSeenHash() + "\"";
+        }
+
+        var fieldCaseInsensitive = recordInBuffer.event().schema().fields().stream()
+                .filter(field -> field.name().equalsIgnoreCase(column)).findFirst();
+        String searchColumn;
+        if (fieldCaseInsensitive.isEmpty()) {
+            LOGGER.warn("Column {} not found on record schema, fallback to snowflake original column name", column);
+            searchColumn = column;
+        } else {
+            searchColumn = fieldCaseInsensitive.get().name();
+        }
+
+        Object valueFromRecord = recordInBuffer.event().get(searchColumn);
+        if (valueFromRecord == null) {
+            LOGGER.warn("Column {} not found on buffer, inserted empty value", column);
+            return "";
+        }
+
+        if (containsAny(column, timestampFieldsConvert)) {
+            var asLong = (long) valueFromRecord;
+            valueFromRecord = LocalDateTime.ofInstant(Instant.ofEpochMilli(asLong),
+                    TimeZone.getDefault().toZoneId()).toString();
+        } else if (containsAny(column, dateFieldsConvert)) {
+            var asInt = (int) valueFromRecord;
+            var daysInSeconds = asInt * 24L * 60L * 60L;
+            valueFromRecord = LocalDate.ofInstant(Instant.ofEpochSecond(daysInSeconds),
+                    TimeZone.getDefault().toZoneId()).toString();
+        } else if (containsAny(column, timeFieldsConvert)) {
+            var asLong = (long) valueFromRecord;
+            valueFromRecord = LocalTime.ofNanoOfDay(asLong).toString();
+        }
+
+        var escaped = valueFromRecord.toString().replace("\"", "\"\"");
+        return "\"" + escaped + "\"";
     }
 
     protected SinkHashRecord calculateHash(String op, Struct record) {
@@ -441,9 +447,13 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     }
 
     private String getFirstSeenHash(String searchHash) {
-        var foundRecord = buffer.get(searchHash);
-        return foundRecord != null && foundRecord.hash() != null && foundRecord.hash().firstSeenHash() != null ?
-                foundRecord.hash().firstSeenHash() : searchHash;
+        // O código antigo fazia buffer.get(searchHash), mas como o buffer nunca foi indexado
+        // por hash, esse get sempre voltava null e caía no fallback devolvendo o próprio
+        // searchHash. Os testes e o restante do fluxo já assumem esse comportamento de
+        // "firstSeenHash = previousHash do evento", então deixamos explícito aqui em vez de
+        // fingir uma busca que nunca encontrava nada. Se um dia quisermos rastrear a linhagem
+        // de verdade, esse é o ponto para revisitar.
+        return searchHash;
     }
 
     private String getHash(Object o) {

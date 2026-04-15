@@ -92,10 +92,14 @@ public abstract class AbstractProcessor {
         schemaName = config.getString(SnowflakeSinkConnector.CFG_SCHEMA_NAME);
         hashingSupport = config.getBoolean(SnowflakeSinkConnector.CFG_HASHING_SUPPORT);
 
-        timestampFieldsConvert.addAll(config.getList(SnowflakeSinkConnector.CFG_TIMESTAMP_FIELDS_CONVERT));
-        dateFieldsConvert.addAll(config.getList(SnowflakeSinkConnector.CFG_DATE_FIELDS_CONVERT));
-        timeFieldsConvert.addAll(config.getList(SnowflakeSinkConnector.CFG_TIME_FIELDS_CONVERT));
-        ignoreColumns.addAll(config.getList(SnowflakeSinkConnector.CFG_IGNORE_COLUMNS));
+        // Aqui usamos atribuição no lugar de addAll. Se o start() for chamado mais de uma vez
+        // (rebalance, retry da task, etc.), o addAll ia empilhando as mesmas colunas várias vezes
+        // e a lista crescia sem parar, segurando memória à toa. Criando uma nova lista a cada
+        // chamada, a configuração fica sempre limpa.
+        timestampFieldsConvert = new ArrayList<>(config.getList(SnowflakeSinkConnector.CFG_TIMESTAMP_FIELDS_CONVERT));
+        dateFieldsConvert = new ArrayList<>(config.getList(SnowflakeSinkConnector.CFG_DATE_FIELDS_CONVERT));
+        timeFieldsConvert = new ArrayList<>(config.getList(SnowflakeSinkConnector.CFG_TIME_FIELDS_CONVERT));
+        ignoreColumns = new ArrayList<>(config.getList(SnowflakeSinkConnector.CFG_IGNORE_COLUMNS));
 
     }
 

@@ -5,6 +5,8 @@ target/
 
 ### IntelliJ IDEA ###
 .idea
+.claude/
+.remember/
 
 ### Eclipse ###
 .apt_generated
