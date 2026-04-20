@@ -30,6 +30,10 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_REDIS_KEY_TTL_SECONDS = "redis_key_ttl_seconds";
     protected static final String CFG_PROFILE = "profile";
     protected static final String CFG_HASHING_SUPPORT = "hashing_support";
+    // Diretório usado pelo Spill to Disk para gravar o CSV temporário antes do
+    // upload para o Snowflake. Em Kubernetes aponta-se para o mountPath de um
+    // PVC; vazio = usa o diretório temporário padrão do SO (geralmente /tmp).
+    protected static final String CFG_SPILL_DIR = "snowflake.spill.dir";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -89,7 +93,12 @@ public class SnowflakeSinkConnector extends SinkConnector {
                     "When true, we will calculate hash for before and after struct and use it if PK does not exist. This is a sort of surrogate key for the record.")
             .define(CFG_TRUNCATE_WHEN_NODATA_AFTER_SECONDS, ConfigDef.Type.INT, 1800,
                     ConfigDef.Importance.HIGH,
-                    "If we don't receive any event for this amount of time, we will truncate the table in snowflake");
+                    "If we don't receive any event for this amount of time, we will truncate the table in snowflake")
+            .define(CFG_SPILL_DIR, ConfigDef.Type.STRING, "", ConfigDef.Importance.MEDIUM,
+                    "Directory used by the Spill to Disk mechanism to stage temporary CSV files before uploading to Snowflake. "
+                            + "Leave empty to use the OS default temp directory (java.io.tmpdir, usually /tmp). "
+                            + "On Kubernetes, set this to a path backed by a PersistentVolumeClaim (e.g. /var/lib/snowflake-spill) "
+                            + "to avoid exhausting the pod's ephemeral storage with large batches. The directory is created at startup if it does not exist.");
 
     private Map<String, String> props;
 

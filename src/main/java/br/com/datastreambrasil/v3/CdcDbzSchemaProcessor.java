@@ -326,13 +326,20 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         var startTime = System.currentTimeMillis();
 
-        // Spill to Disk — criamos um arquivo temporário no diretório temporário
-        // padrão do sistema operacional. Escrever o CSV direto em disco elimina
-        // por completo o risco de OutOfMemoryError, pois o payload nunca precisa
-        // caber inteiro na heap do JVM (nem como char[], nem como byte[]). Esse
-        // arquivo é de responsabilidade do chamador e DEVE ser apagado no finally
-        // do flush (ver CdcDbzSchemaProcessor#flush).
-        var csvTempFile = Files.createTempFile("snowflake-sink-", ".csv");
+        // Spill to Disk — criamos um arquivo temporário para gravar o CSV antes
+        // do upload. Escrever direto em disco elimina por completo o risco de
+        // OutOfMemoryError, pois o payload nunca precisa caber inteiro na heap
+        // do JVM (nem como char[], nem como byte[]). Esse arquivo é de
+        // responsabilidade do chamador e DEVE ser apagado no finally do flush
+        // (ver CdcDbzSchemaProcessor#flush).
+        //
+        // Quando spillDirectory está configurado (ex.: mountPath de um PVC em
+        // Kubernetes), criamos o arquivo dentro dele para não depender do
+        // storage efêmero do pod. Caso contrário caímos no diretório temporário
+        // padrão do SO (java.io.tmpdir, geralmente /tmp).
+        var csvTempFile = spillDirectory != null
+                ? Files.createTempFile(spillDirectory, "snowflake-sink-", ".csv")
+                : Files.createTempFile("snowflake-sink-", ".csv");
 
         flushHasDeletedRecords = false;
         flushHasUpdatedRecords = false;

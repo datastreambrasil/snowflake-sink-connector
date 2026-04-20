@@ -9,6 +9,9 @@ import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -37,6 +40,12 @@ public abstract class AbstractProcessor {
     protected List<String> timeFieldsConvert = new ArrayList<>();
     protected final Map<String, SnowflakeRecord> buffer = new LinkedHashMap<>();
     protected boolean hashingSupport;
+
+    // Diretório para o Spill to Disk. Quando null, o CdcDbzSchemaProcessor cai
+    // no Files.createTempFile padrão (java.io.tmpdir). Quando configurado, o
+    // CSV temporário é gravado aqui — típico em Kubernetes para apontar para
+    // o mountPath de um PVC e não depender do storage efêmero do pod.
+    protected Path spillDirectory;
 
 
     protected static final String AFTER = "after";
@@ -101,6 +110,28 @@ public abstract class AbstractProcessor {
         timeFieldsConvert = new ArrayList<>(config.getList(SnowflakeSinkConnector.CFG_TIME_FIELDS_CONVERT));
         ignoreColumns = new ArrayList<>(config.getList(SnowflakeSinkConnector.CFG_IGNORE_COLUMNS));
 
+        // Spill to Disk — resolução do diretório de trabalho dos CSVs temporários.
+        // Se o operador informou um caminho (tipicamente o mountPath de um PVC no
+        // Kubernetes), validamos e criamos o diretório caso ele ainda não exista.
+        // Se vier vazio/nulo, deixamos spillDirectory = null para o processador
+        // cair no Files.createTempFile padrão (java.io.tmpdir).
+        var spillDirConfig = config.getString(SnowflakeSinkConnector.CFG_SPILL_DIR);
+        if (spillDirConfig != null && !spillDirConfig.isBlank()) {
+            spillDirectory = Path.of(spillDirConfig.trim());
+            try {
+                // createDirectories é idempotente: não falha se o diretório já
+                // existir, e cria qualquer pai faltante de uma vez. Isso evita
+                // precisar de um initContainer só para preparar a pasta do PVC.
+                Files.createDirectories(spillDirectory);
+                LOGGER.info("Spill to Disk directory configured: {}", spillDirectory);
+            } catch (IOException e) {
+                LOGGER.error("Could not create spill directory {}", spillDirectory, e);
+                throw new RuntimeException("Could not create spill directory " + spillDirectory, e);
+            }
+        } else {
+            spillDirectory = null;
+            LOGGER.info("Spill to Disk directory not configured, falling back to OS default temp directory");
+        }
     }
 
     protected void setupSnowflakeConnection(AbstractConfig config) {
