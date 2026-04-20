@@ -18,10 +18,13 @@ import org.quartz.TriggerBuilder;
 import org.quartz.impl.StdSchedulerFactory;
 
 import java.io.BufferedWriter;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -115,6 +118,12 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         }
 
         var destFileName = UUID.randomUUID().toString();
+
+        // Spill to Disk: guardamos aqui a referência ao arquivo CSV temporário
+        // em disco. A variável fica fora do try principal para garantir que o
+        // bloco finally consiga apagá-la mesmo se qualquer etapa falhar antes
+        // ou durante o upload para o Snowflake.
+        Path csvTempFile = null;
         try {
             LOGGER.debug("Preparing to send {} records from buffer. To stage {} and table {}", buffer.size(), stageName,
                     tableName);
@@ -122,60 +131,68 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             var columnsFromMetadata = columnsIngestTable;
             var blockID = UUID.randomUUID().toString();
             var startTimeMain = System.currentTimeMillis();
-            try (var csvToInsert = prepareOrderedColumnsBasedOnTargetTable(blockID, columnsFromMetadata);
-                 var inputStream = new ByteArrayInputStream(csvToInsert.toByteArray())) {
 
+            // Serializamos o buffer para um arquivo CSV em disco. Isso evita
+            // qualquer risco de OutOfMemoryError, pois nem o CSV inteiro nem o
+            // array de bytes equivalente ficam residentes na heap.
+            csvTempFile = prepareOrderedColumnsBasedOnTargetTable(blockID, columnsFromMetadata);
+
+            // Abrimos um FileInputStream para o arquivo temporário e passamos
+            // direto para o Snowflake. O driver lê os bytes do disco em chunks,
+            // portanto o payload nunca é carregado por completo em memória.
+            try (var inputStream = new FileInputStream(csvTempFile.toFile())) {
                 var startTimeUpload = System.currentTimeMillis();
                 snowflakeConnection.uploadStream(stageName, "/", inputStream,
                         destFileName, true);
                 var endTimeUpload = System.currentTimeMillis();
                 LOGGER.debug("Uploaded {} records in {} ms", buffer.size(), endTimeUpload - startTimeUpload);
-
-                var startTimeStatement = System.currentTimeMillis();
-                try (var stmt = connection.createStatement()) {
-
-                    //copy everything to ingest
-                    String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName, String.join(",", columnsFromMetadata),
-                            stageName, destFileName);
-                    LOGGER.debug("Copying statement to ingest table: {}", copyInto);
-                    stmt.executeUpdate(copyInto);
-
-                    if (flushHasInsertedRecords) {
-                        String insert = String.format("INSERT INTO %s (%s) SELECT * EXCLUDE (%s) FROM %s WHERE ih_blockid = '%s' and ih_op in ('c', 'r')",
-                                tableName, String.join(",", columnsFinalTable), buildExcludeColumns(), ingestTableName, blockID);
-                        LOGGER.debug("Inserting into ingest table: {}", insert);
-                        stmt.executeUpdate(insert);
-                    }
-
-
-                    if (flushHasUpdatedRecords) {
-                        //update in final table
-                        String update = String.format(
-                                "UPDATE %s AS final SET %s FROM (SELECT * FROM %s WHERE ih_blockid = '%s' and ih_op = 'u') AS ingest WHERE %s",
-                                tableName, buildUpdateColumns(), ingestTableName, blockID,
-                                buildPkWhereClause(pks));
-                        LOGGER.debug("Updating statement to final table: {}", update);
-                        stmt.executeUpdate(update);
-                    }
-
-                    //delete from final table
-                    if (flushHasDeletedRecords) {
-                        String deleteFromFinalTable = String.format(
-                                "DELETE FROM %s as final USING (SELECT %s FROM %s WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest WHERE %s",
-                                tableName, hashingSupport ? String.join(",", IH_CURRENT_HASH, IH_PREVIOUS_HASH) : String.join(",", pks),
-                                ingestTableName, blockID,
-                                buildPkWhereClause(pks));
-                        LOGGER.debug("Deleting statement from final table: {}", deleteFromFinalTable);
-                        stmt.executeUpdate(deleteFromFinalTable);
-                    }
-
-                    var endTimeStatement = System.currentTimeMillis();
-                    LOGGER.debug("Executed statement in {} ms", endTimeStatement - startTimeStatement);
-
-                } catch (SQLException e) {
-                    throw new RuntimeException("Error executing operations", e);
-                }
             }
+
+            var startTimeStatement = System.currentTimeMillis();
+            try (var stmt = connection.createStatement()) {
+
+                //copy everything to ingest
+                String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName, String.join(",", columnsFromMetadata),
+                        stageName, destFileName);
+                LOGGER.debug("Copying statement to ingest table: {}", copyInto);
+                stmt.executeUpdate(copyInto);
+
+                if (flushHasInsertedRecords) {
+                    String insert = String.format("INSERT INTO %s (%s) SELECT * EXCLUDE (%s) FROM %s WHERE ih_blockid = '%s' and ih_op in ('c', 'r')",
+                            tableName, String.join(",", columnsFinalTable), buildExcludeColumns(), ingestTableName, blockID);
+                    LOGGER.debug("Inserting into ingest table: {}", insert);
+                    stmt.executeUpdate(insert);
+                }
+
+
+                if (flushHasUpdatedRecords) {
+                    //update in final table
+                    String update = String.format(
+                            "UPDATE %s AS final SET %s FROM (SELECT * FROM %s WHERE ih_blockid = '%s' and ih_op = 'u') AS ingest WHERE %s",
+                            tableName, buildUpdateColumns(), ingestTableName, blockID,
+                            buildPkWhereClause(pks));
+                    LOGGER.debug("Updating statement to final table: {}", update);
+                    stmt.executeUpdate(update);
+                }
+
+                //delete from final table
+                if (flushHasDeletedRecords) {
+                    String deleteFromFinalTable = String.format(
+                            "DELETE FROM %s as final USING (SELECT %s FROM %s WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest WHERE %s",
+                            tableName, hashingSupport ? String.join(",", IH_CURRENT_HASH, IH_PREVIOUS_HASH) : String.join(",", pks),
+                            ingestTableName, blockID,
+                            buildPkWhereClause(pks));
+                    LOGGER.debug("Deleting statement from final table: {}", deleteFromFinalTable);
+                    stmt.executeUpdate(deleteFromFinalTable);
+                }
+
+                var endTimeStatement = System.currentTimeMillis();
+                LOGGER.debug("Executed statement in {} ms", endTimeStatement - startTimeStatement);
+
+            } catch (SQLException e) {
+                throw new RuntimeException("Error executing operations", e);
+            }
+
             var endTimeMain = System.currentTimeMillis();
             LOGGER.debug("Process records took {} ms", endTimeMain - startTimeMain);
 
@@ -183,6 +200,19 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             LOGGER.error("Error while flushing Snowflake connector", e);
             throw new RuntimeException("Error while flushing", e);
         } finally {
+            // CRÍTICO — Limpeza do Spill to Disk: removemos o CSV temporário do
+            // disco SEMPRE, inclusive quando o upload ou o COPY INTO explodem.
+            // Sem isso, um erro recorrente no Snowflake iria acumulando arquivos
+            // em /tmp e, em poucas horas, esgotaria o disco do worker do Kafka
+            // Connect. Files.deleteIfExists é idempotente, então é seguro chamar
+            // mesmo se o arquivo já tiver sido removido por outra via.
+            if (csvTempFile != null) {
+                try {
+                    Files.deleteIfExists(csvTempFile);
+                } catch (IOException ex) {
+                    LOGGER.warn("Falha ao remover CSV temporário {}: {}", csvTempFile, ex.getMessage());
+                }
+            }
             var endTime = System.currentTimeMillis();
             LOGGER.debug("Flushed {} records in {} ms", buffer.size(), endTime - startTime);
             buffer.clear();
@@ -292,23 +322,29 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     }
 
-    protected ByteArrayOutputStream prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable) throws Throwable {
+    protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable) throws Throwable {
 
         var startTime = System.currentTimeMillis();
-        var csvInMemory = new ByteArrayOutputStream();
+
+        // Spill to Disk — criamos um arquivo temporário no diretório temporário
+        // padrão do sistema operacional. Escrever o CSV direto em disco elimina
+        // por completo o risco de OutOfMemoryError, pois o payload nunca precisa
+        // caber inteiro na heap do JVM (nem como char[], nem como byte[]). Esse
+        // arquivo é de responsabilidade do chamador e DEVE ser apagado no finally
+        // do flush (ver CdcDbzSchemaProcessor#flush).
+        var csvTempFile = Files.createTempFile("snowflake-sink-", ".csv");
 
         flushHasDeletedRecords = false;
         flushHasUpdatedRecords = false;
         flushHasInsertedRecords = false;
 
-        // O OOM em produção acontecia aqui: o CSV inteiro era montado num StringBuilder e só
-        // depois convertido em bytes. StringBuilder guarda char[] (2 bytes por caractere) e
-        // ainda dobra o array quando precisa crescer, ou seja, por um momento temos duas
-        // cópias gigantes na heap, e a cópia final do toString().getBytes() ainda duplica de
-        // novo. Com um registro muito grande isso estourava o limite de ~2 GB de array do JVM.
-        // Escrevendo direto em bytes pelo Writer/OutputStream, pulamos o char[] intermediário,
-        // evitamos o toString() final e reduzimos bastante o pico de memória.
-        try (var writer = new BufferedWriter(new OutputStreamWriter(csvInMemory, StandardCharsets.UTF_8))) {
+        // Encadeamos FileOutputStream → OutputStreamWriter(UTF-8) → BufferedWriter.
+        // O BufferedWriter amortiza as chamadas de escrita, o OutputStreamWriter
+        // garante a codificação UTF-8 correta e o FileOutputStream escreve os
+        // bytes direto em disco. Assim a montagem do CSV é streaming puro, sem
+        // qualquer buffer proporcional ao tamanho do lote em RAM.
+        try (var writer = new BufferedWriter(
+                new OutputStreamWriter(new FileOutputStream(csvTempFile.toFile()), StandardCharsets.UTF_8))) {
             boolean loggedDebugForFirstLine = false;
             for (var recordInBuffer : buffer.values()) {
                 var op = recordInBuffer.op();
@@ -347,11 +383,22 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     loggedDebugForFirstLine = true;
                 }
             }
+        } catch (Throwable t) {
+            // Se a escrita falhar no meio do caminho, o arquivo temporário já foi
+            // criado em disco. Apagamos imediatamente aqui para não depender do
+            // finally do flush (o chamador pode nem ter recebido o Path ainda).
+            try {
+                Files.deleteIfExists(csvTempFile);
+            } catch (IOException suppressed) {
+                t.addSuppressed(suppressed);
+            }
+            throw t;
         }
 
         var endTime = System.currentTimeMillis();
-        LOGGER.debug("Prepared csv in memory in {} ms, size {} bytes", endTime - startTime, csvInMemory.size());
-        return csvInMemory;
+        LOGGER.debug("Prepared csv on disk in {} ms, path {}, size {} bytes",
+                endTime - startTime, csvTempFile, Files.size(csvTempFile));
+        return csvTempFile;
     }
 
     private String renderCell(String column, SnowflakeRecord recordInBuffer, String blockID) {

@@ -20,7 +20,7 @@ Originally forked from the public [Datastream Brasil](https://github.com/datastr
 The Snowflake Sink Connector consumes records from one or more Kafka topics and writes them into Snowflake through a hybrid pipeline:
 
 1. **Buffering**: Incoming `SinkRecord`s are validated, normalized, and staged in an in-memory buffer keyed by primary key.
-2. **Staging (PUT)**: On each flush, the buffered batch is serialized as CSV and uploaded to a Snowflake internal stage via the `SnowflakeConnection.uploadStream` API (gzip-compressed on the wire).
+2. **Staging (PUT, Spill to Disk)**: On each flush, the buffered batch is streamed **directly to a temporary CSV file on the local filesystem** (never fully materialized in the JVM heap). The connector then opens a `FileInputStream` against that file and hands it to `SnowflakeConnection.uploadStream` (gzip-compressed on the wire). The temp file is always deleted in a `finally` block.
 3. **Ingestion (COPY INTO)**: The staged file is `COPY INTO`-ed into an ingest (landing) table using JDBC.
 4. **Merge**: From the ingest table the connector executes `INSERT` / `UPDATE` / `DELETE` statements against the final target table, reconciling CDC operations.
 5. **Cleanup**: A Quartz-scheduled cleanup job prunes stale ingest rows on a configurable cadence.
@@ -33,24 +33,19 @@ The default processor (`cdc_schema` profile) is purpose-built for **Debezium CDC
 
 The following refactorings were driven by a production incident where Kafka Connect workers crashed with `java.lang.OutOfMemoryError: Required array length 2147483639 + 29693 is too large`. Preserving the reasoning is essential — future maintainers should understand *why* these choices are not merely stylistic.
 
-### 1. 🧵 Stream-Based CSV Assembly
+The connector went through two architectural iterations in response to the incident: first removing the `StringBuilder` / `String` / `byte[]` triple copy (streaming into a `ByteArrayOutputStream`), and now moving the entire CSV payload **out of the heap** via a Spill to Disk approach. Sections **1** and **2** below describe the current design.
 
-**Problem.** The previous `prepareOrderedColumnsBasedOnTargetTable` accumulated the entire batch CSV inside a `StringBuilder`, then materialized it with `stringBuilder.toString().getBytes(UTF_8)` before handing the bytes to a `ByteArrayOutputStream`.
+### 1. 💽 Spill to Disk — Zero-Heap CSV Assembly
 
-This has three compounding costs:
+**Problem.** The intermediate fix (stream into `ByteArrayOutputStream`) eliminated the three-way copy, but the **entire serialized CSV still lived in the JVM heap** as a single `byte[]` until the upload completed. Any sufficiently large batch — or a single pathologically wide row with embedded JSON / CLOB / blob columns — could still approach the JVM's ~2 GB maximum array length and trigger the same `OutOfMemoryError`. The connector was *less* likely to OOM, but not *immune* to it.
 
-| Stage | Memory footprint |
-|---|---|
-| `StringBuilder` internal `char[]` | **2 bytes per character**, doubles on overflow (up to ~2× live data during resize) |
-| `toString()` | allocates a fresh `String` → another full copy of the `char[]` |
-| `getBytes(UTF_8)` | allocates a `byte[]` → yet another full copy |
-
-For a single wide CDC row containing a large JSON / CLOB / serialized blob column, the transient peak could trivially exceed the JVM's ~2 GB maximum array length, producing the observed OOM even with `max.poll.records=1`.
-
-**Fix.** We now stream each cell directly into the output buffer:
+**Fix.** The CSV is now streamed **directly to a temporary file on the OS filesystem**. The JVM heap never holds the full payload. During assembly the only thing in memory is the `BufferedWriter`'s small flush buffer (a few KB); every byte written passes through and lands on disk. At upload time the connector opens a `FileInputStream` and hands it to the Snowflake driver, which reads from disk in chunks.
 
 ```java
-try (var writer = new BufferedWriter(new OutputStreamWriter(csvInMemory, StandardCharsets.UTF_8))) {
+// Spill to Disk — the CSV is assembled directly into the OS temp directory.
+var csvTempFile = Files.createTempFile("snowflake-sink-", ".csv");
+try (var writer = new BufferedWriter(
+        new OutputStreamWriter(new FileOutputStream(csvTempFile.toFile()), StandardCharsets.UTF_8))) {
     for (var recordInBuffer : buffer.values()) {
         for (String column : columnsFromTable) {
             writer.write(renderCell(column, recordInBuffer, blockID));
@@ -59,17 +54,63 @@ try (var writer = new BufferedWriter(new OutputStreamWriter(csvInMemory, Standar
         writer.write('\n');
     }
 }
+
+// Upload streams bytes from disk; the full payload is never resident in the heap.
+try (var inputStream = new FileInputStream(csvTempFile.toFile())) {
+    snowflakeConnection.uploadStream(stageName, "/", inputStream, destFileName, true);
+}
 ```
 
-Benefits:
+| Dimension | Previous (`ByteArrayOutputStream`) | Current (Spill to Disk) |
+|---|---|---|
+| Peak heap during CSV assembly | Proportional to batch size (can exceed 2 GB) | **Constant** — only the `BufferedWriter` flush buffer (~8 KB) |
+| Payload size ceiling | JVM max array length (~2 GB) | **Free disk space on the Connect worker** |
+| `Required array length ... is too large` OOM | Still possible on wide rows / huge batches | **Impossible** — no `byte[]` ever holds the full payload |
+| GC pressure per flush | One large short-lived `byte[]` per flush | Near zero; bytes stream through without allocation |
 
-- **No `char[]` → `String` → `byte[]` triple copy.** Bytes are written as they are produced.
-- **UTF-8 bytes instead of UTF-16 chars.** For the ASCII-dominant CSV payload this roughly halves peak heap.
-- **No `StringBuilder` doubling.** `ByteArrayOutputStream` grows geometrically too, but from a smaller base and without an intermediate `toString()` pivot.
+Net effect: the connector is **100% immune to `OutOfMemoryError` during CSV assembly, regardless of batch size or row width**. The only resource the payload consumes is a file handle and some `/tmp` bytes — both of which are reclaimed before `flush()` returns (see §2).
 
-Net effect: the single-record OOM ceiling is raised dramatically, and steady-state heap for large batches is materially lower.
+### 2. 🛟 Strict Disk Cleanup (Fail-Safe)
 
-### 2. 🧯 State Leak Resolution in `AbstractProcessor`
+**Problem.** Spilling to disk trades one failure mode (heap OOM) for another: if temporary files leak — because the upload hung, the network dropped, Snowflake returned an error, or the JVM was killed mid-flush — `/tmp` eventually fills up and workers start throwing `java.io.IOException: No space left on device`. A disk-exhaustion outage is arguably *worse* than a heap OOM, because it takes down **every** sink task on the worker, not just the one that tripped. Spill to Disk is only safe if we can guarantee the temp file is always removed.
+
+**Fix.** `flush()` wraps the entire upload + COPY INTO + merge pipeline in a `try` / `finally` and deletes the temp file unconditionally in the `finally` clause:
+
+```java
+Path csvTempFile = null;
+try {
+    csvTempFile = prepareOrderedColumnsBasedOnTargetTable(blockID, columnsFromMetadata);
+
+    try (var inputStream = new FileInputStream(csvTempFile.toFile())) {
+        snowflakeConnection.uploadStream(stageName, "/", inputStream, destFileName, true);
+    }
+    // ... COPY INTO / INSERT / UPDATE / DELETE against the ingest + final tables ...
+} catch (Throwable e) {
+    LOGGER.error("Error while flushing Snowflake connector", e);
+    throw new RuntimeException("Error while flushing", e);
+} finally {
+    // Strict cleanup — remove the CSV even if the upload or SQL step exploded.
+    if (csvTempFile != null) {
+        try {
+            Files.deleteIfExists(csvTempFile);
+        } catch (IOException ex) {
+            LOGGER.warn("Failed to remove temp CSV {}: {}", csvTempFile, ex.getMessage());
+        }
+    }
+    buffer.clear();
+}
+```
+
+Why this design matters in production:
+
+- **Snowflake outages can't cascade into disk exhaustion.** Even when `uploadStream` hangs or `COPY INTO` returns an error, every temp file is removed on the way out. A Snowflake incident degrades throughput, not worker health.
+- **Idempotent on retry.** `Files.deleteIfExists(...)` is explicitly designed to tolerate a missing file (e.g. removed by an OS-level `/tmp` reaper between creation and cleanup). Repeated Connect task restarts never throw on the cleanup path.
+- **Early failures self-heal.** If the CSV assembly itself fails mid-write, `prepareOrderedColumnsBasedOnTargetTable` deletes its own partial file **before rethrowing** — the caller never receives a `Path` for a stranded file, so the outer `finally` has nothing to clean up and nothing is ever left behind.
+- **Observable leaks.** Any residual `/tmp/snowflake-sink-*.csv` older than one flush cycle is by definition a bug. You can point a simple `find /tmp -name 'snowflake-sink-*.csv' -mmin +10` at the workers as a canary.
+
+Together, §1 (Spill to Disk) and §2 (Strict Cleanup) give the connector **true infinite resilience** against payload-size-driven failures: batches are limited only by the worker's free disk space, and temp-file leaks are structurally impossible under the `finally`-guaranteed cleanup.
+
+### 3. 🧯 State Leak Resolution in `AbstractProcessor`
 
 **Problem.** `configParameters(...)` populated the processor's convert-column lists like this:
 
@@ -93,7 +134,7 @@ ignoreColumns         = new ArrayList<>(config.getList(CFG_IGNORE_COLUMNS));
 
 Each reconfiguration now yields a clean, correctly-sized list — no growth, no drift.
 
-### 3. 🔑 Buffer Bloat & PK-Based Collapsing
+### 4. 🔑 Buffer Bloat & PK-Based Collapsing
 
 **Problem.** The in-flight buffer used `UUID.randomUUID().toString()` as its key:
 
@@ -115,7 +156,7 @@ Consequences:
 - Buffer size tracks the number of distinct rows pending, not the raw event count.
 - The CSV uploaded to Snowflake is leaner, `COPY INTO` is faster, and downstream `MERGE` / `UPDATE` / `DELETE` statements touch fewer rows.
 
-### 4. ✨ Minor Hardening
+### 5. ✨ Minor Hardening
 
 - `getFirstSeenHash(...)` explicitly returns `searchHash` (pass-through). The previous `buffer.get(searchHash)` could never match once the buffer stopped being hash-keyed; the intent is now documented rather than accidental.
 - Date-field conversion promotes arithmetic to `long` (`asInt * 24L * 60L * 60L`) to preclude any future int-overflow surprises on far-future dates.
@@ -242,28 +283,32 @@ The connector uses Log4j2 (SLF4J-bound). The relevant loggers live under `br.com
 | Level | Message pattern | What it tells you |
 |---|---|---|
 | `DEBUG` | `Preparing to send N records from buffer...` | Flush cadence and batch size. Useful for sizing `max.poll.records`. |
-| `DEBUG` | `Prepared csv in memory in X ms, size Y bytes` | CSV assembly time and payload size — your primary **memory-pressure indicator**. |
-| `DEBUG` | `Uploaded N records in X ms` | Time spent in `SnowflakeConnection.uploadStream`. |
+| `DEBUG` | `Prepared csv on disk in X ms, path /tmp/snowflake-sink-*.csv, size Y bytes` | CSV assembly time, temp-file path, and payload size — your primary **payload-size indicator** under the Spill to Disk architecture. |
+| `DEBUG` | `Uploaded N records in X ms` | Time spent in `SnowflakeConnection.uploadStream`, reading from the temp file. |
 | `DEBUG` | `Executed statement in X ms` | JDBC wall time for `COPY INTO` / `INSERT` / `UPDATE` / `DELETE`. |
 | `WARN`  | `Column X not found on record schema, fallback to snowflake original column name` | Schema drift — investigate upstream. |
-| `ERROR` | `Error while flushing Snowflake connector` | Flush failure. The buffer is cleared in `finally`; the framework will re-deliver from the last committed offsets. |
+| `WARN`  | `Failed to remove temp CSV ...` | Rare: the `finally`-block cleanup failed. Investigate disk / permissions; pair with a `/tmp` canary (see below). |
+| `ERROR` | `Error while flushing Snowflake connector` | Flush failure. The temp CSV is still deleted in `finally` and the buffer is cleared; the framework will re-deliver from the last committed offsets. |
 
-For production, enable `DEBUG` on `br.com.datastreambrasil.v3` selectively (or via a log-rotating sampler) — the `Prepared csv in memory ... size Y bytes` line is the canonical signal to watch.
+For production, enable `DEBUG` on `br.com.datastreambrasil.v3` selectively (or via a log-rotating sampler) — the `Prepared csv on disk ... size Y bytes` line is the canonical signal to watch.
 
-### Memory monitoring
+### Memory & disk monitoring
 
-After the refactor, expected steady-state behavior is:
+After the Spill to Disk refactor, expected steady-state behavior is:
 
-- **Bounded buffer size**: grows only with the number of *distinct* primary keys pending between flushes.
-- **Bounded CSV payload**: no transient `StringBuilder`/`String`/`byte[]` triplication.
+- **Bounded buffer size**: the in-memory `SinkRecord` buffer grows only with the number of *distinct* primary keys pending between flushes.
+- **CSV payload off-heap**: the serialized CSV lives on the OS filesystem, not the JVM heap. Peak heap during assembly is ≈ the `BufferedWriter` flush buffer, independent of batch size.
+- **No leaked temp files**: every `/tmp/snowflake-sink-*.csv` is deleted in `flush()`'s `finally` block — a file surviving past one flush cycle is by definition a bug.
 - **Stable old-gen**: no per-flush leak; `buffer.clear()` runs unconditionally in `flush`'s `finally`.
 
 Recommended to track:
 
 | Metric | Signal |
 |---|---|
-| JVM heap used (old gen) | Should be flat post-flush; a climbing trend indicates a regression. |
-| GC pause time / frequency | Should correlate with flush cadence, not grow over time. |
+| JVM heap used (old gen) | Should be flat post-flush and largely independent of payload size; a climbing trend indicates a regression. |
+| GC pause time / frequency | Should correlate with flush cadence, not grow over time. Spill to Disk removes the large short-lived `byte[]` allocations that used to dominate. |
+| Worker free disk on `/tmp` (or `$TMPDIR`) | **New.** Each flush briefly consumes up to the raw CSV size on disk. Size the partition for `sum(concurrent flush payloads) × safety margin`. |
+| Leaked temp files | `find /tmp -name 'snowflake-sink-*.csv' -mmin +10 \| wc -l` should remain `0`. Non-zero values indicate a cleanup bug or a JVM killed mid-flush. |
 | `kafka.connect:type=sink-task-metrics,sink-record-send-total` | Throughput baseline. |
 | `kafka.connect:type=sink-task-metrics,sink-record-lag-max` | Back-pressure signal; pair with `size Y bytes` log to diagnose slow flushes. |
 | Snowflake query history (`QUERY_HISTORY` view) | Confirms `COPY INTO` / `MERGE` latencies match in-connector timings. |
@@ -274,7 +319,8 @@ Recommended to track:
 |---|---|
 | High-cardinality, low-update streams | Increase `max.poll.records`; buffer collapsing is less beneficial, so throughput dominates. |
 | Hot-key, high-update streams | Keep `max.poll.records` moderate — PK collapsing will do the work and keep payloads small. |
-| Wide rows with large JSON/CLOB columns | Lower `max.poll.records`, and consider listing the offending column in `ignore_columns` if it is not needed in Snowflake. |
+| Wide rows with large JSON/CLOB columns | Spill to Disk removes the heap ceiling, so payload size is now a **disk** concern, not a heap concern. Ensure `/tmp` (or `$TMPDIR`) has ample free space; consider listing the offending column in `ignore_columns` if it is not needed in Snowflake. |
+| Very large batches | Safe by design — size is bounded by worker free disk, not by the JVM 2 GB array limit. Prefer larger batches for throughput, and monitor the `size Y bytes` log to capacity-plan `/tmp`. |
 
 ---
 

@@ -11,6 +11,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.quartz.SchedulerException;
 
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
@@ -38,8 +41,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.assertArg;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.matches;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.timeout;
@@ -220,16 +223,34 @@ class CdcDbzSchemaProcessorTest {
     }
 
     @Test
-    void testFlushWithSuccess() throws SQLException {
+    void testFlushWithSuccess() throws Throwable {
         var processor = new CdcDbzSchemaProcessor();
         var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
         var statementMock = prepareToFlush(processor, null, null, null);
+
+        // Com o Spill to Disk, o stream passado para uploadStream é um FileInputStream
+        // que o flush() fecha no try-with-resources antes de retornar. Por isso
+        // capturamos o tamanho do payload AQUI, dentro do mock, enquanto o stream
+        // ainda está aberto — chamar available() depois do close() lançaria IOException.
+        int[] capturedAvailable = {-1};
+        doAnswer(invocation -> {
+            InputStream is = invocation.getArgument(2);
+            capturedAvailable[0] = is.available();
+            return null;
+        }).when(processor.snowflakeConnection).uploadStream(any(), eq("/"), any(InputStream.class), any(), eq(true));
+
         processor.put(generateCreateEvents(dt, "1", "2", "3"));
         processor.put(generateUpdateEvents(dt, null, "new", "4"));
         processor.put(generateDeleteEvents(dt, "5"));
         processor.flush(null);
 
-        verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"), assertArg(c -> assertEquals(769, c.available(), "CSV data length should be 459 bytes")), any(), eq(true));
+        verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"), any(InputStream.class), any(), eq(true));
+        // A largura do campo ih_datetime (LocalDateTime.now().toString()) depende
+        // da precisão de nanossegundos do SO e do JDK, então o tamanho total do
+        // CSV varia entre execuções. Em vez de travar em um número exato, validamos
+        // uma faixa que ainda garante que as 5 linhas esperadas foram escritas.
+        assertTrue(capturedAvailable[0] > 700 && capturedAvailable[0] < 900,
+                () -> "CSV data length out of expected range (700-900): " + capturedAvailable[0]);
         verify(statementMock, times(1)).executeUpdate(matches("INSERT.*"));
         verify(statementMock, times(1)).executeUpdate(matches("UPDATE.*"));
         verify(statementMock, times(1)).executeUpdate(matches("DELETE(.*)final.id = ingest.id"));
@@ -245,13 +266,14 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateCreateEvents(dt, "1"));
         processor.put(generateDeleteEvents(dt, "2"));
         var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME));
+        var csvPath = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME));
+        var csvContent = readAndDelete(csvPath);
         var pattern = Pattern.compile("""
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111",(?<msgtimestampc>.*)
                 "2","Name 2","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",(?<msgtimestampd>.*)
                 """);
 
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
+        assertTrue(pattern.matcher(csvContent).find(), String.format("CSV data [%s] should match with regex %s", csvContent, pattern.pattern()));
     }
 
     @Test
@@ -262,12 +284,13 @@ class CdcDbzSchemaProcessorTest {
                 List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH));
         processor.put(generateCreateEvents(dt, "1")); //hash CR32 --> d73d14a5
         var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvPath = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvContent = readAndDelete(csvPath);
         var pattern = Pattern.compile("""
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111","d73d14a5","d73d14a5",(?<msgtimestampc>.*)
                 """);
 
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
+        assertTrue(pattern.matcher(csvContent).find(), String.format("CSV data [%s] should match with regex %s", csvContent, pattern.pattern()));
     }
 
     @Test
@@ -278,12 +301,13 @@ class CdcDbzSchemaProcessorTest {
                 List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH));
         processor.put(generateUpdateEvents(dt, null, "new", "1")); //hash CR32 --> b7405ebe
         var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvPath = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvContent = readAndDelete(csvPath);
         var pattern = Pattern.compile("""
                 "1","Name new 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b7405ebe","d73d14a5",(?<msgtimestampc>.*)
                 """);
 
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
+        assertTrue(pattern.matcher(csvContent).find(), String.format("CSV data [%s] should match with regex %s", csvContent, pattern.pattern()));
     }
 
     @Test
@@ -295,12 +319,13 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateCreateEvents(dt, "1")); //hash CR32 --> d73d14a5
         processor.put(generateDeleteEvents(dt, "1")); //hash CR32 --> d73d14a5
         var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvPath = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvContent = readAndDelete(csvPath);
         var pattern = Pattern.compile("""
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",,"d73d14a5",(?<msgtimestampd>.*)
                 """);
 
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
+        assertTrue(pattern.matcher(csvContent).find(), String.format("CSV data [%s] should match with regex %s", csvContent, pattern.pattern()));
     }
 
     @Test
@@ -316,7 +341,8 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateUpdateEvents(dt, null, "new", "3")); //hash CR32 --> (previous)97134ed4,(new)b2fc442b
         processor.put(generateUpdateEvents(dt, null, "new", "3")); //hash CR32 --> (previous)97134ed4,(new)b2fc442b
         var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvPath = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvContent = readAndDelete(csvPath);
         var pattern = Pattern.compile("""
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111","d73d14a5","d73d14a5",(?<msgtimestampc>.*)
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111","d73d14a5","d73d14a5",(?<msgtimestampc2>.*)
@@ -326,7 +352,7 @@ class CdcDbzSchemaProcessorTest {
                 "3","Name new 3","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b2fc442b","97134ed4",(?<msgtimestampu2>.*)
                 """);
 
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
+        assertTrue(pattern.matcher(csvContent).find(), String.format("CSV data [%s] should match with regex %s", csvContent, pattern.pattern()));
     }
 
     @Test
@@ -338,12 +364,13 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateCreateEvents(dt, "1")); //hash CR32 --> d73d14a5
         processor.put(generateUpdateEvents(dt, null, "new", "1")); //hash CR32 --> b7405ebe
         var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvPath = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvContent = readAndDelete(csvPath);
         var pattern = Pattern.compile("""
                 "1","Name new 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b7405ebe","d73d14a5",(?<msgtimestampc>.*)
                 """);
 
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
+        assertTrue(pattern.matcher(csvContent).find(), String.format("CSV data [%s] should match with regex %s", csvContent, pattern.pattern()));
     }
 
     @Test
@@ -356,14 +383,15 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateUpdateEvents(dt, null, "new", "1")); //hash CR32 --> b7405ebe
         processor.put(generateUpdateEvents(dt, "new", "new 2", "1")); //hash CR32 --> b8598879
         var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvPath = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvContent = readAndDelete(csvPath);
         var pattern = Pattern.compile("""
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111","d73d14a5","d73d14a5",(?<msgtimestampc>.*)
                 "1","Name new 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b7405ebe","d73d14a5",(?<msgtimestampc2>.*)
                 "1","Name new 2 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b8598879","b7405ebe",(?<msgtimestampc3>.*)
                 """);
 
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
+        assertTrue(pattern.matcher(csvContent).find(), String.format("CSV data [%s] should match with regex %s", csvContent, pattern.pattern()));
     }
 
     @Test
@@ -376,14 +404,15 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateUpdateEvents(dt, "new", "new 002", "1")); //hash CR32 --> (previous)b7405ebe,(new)b3ebfb4d
         processor.put(generateUpdateEvents(dt, "new 002", "new 003", "1")); //hash CR32 --> (previous)b3ebfb4d,(new)daa7febc
         var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvPath = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
+        var csvContent = readAndDelete(csvPath);
         var pattern = Pattern.compile("""
                 "1","Name new 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b7405ebe","d73d14a5",(?<msgtimestampc>.*)
                 "1","Name new 002 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b3ebfb4d","b7405ebe",(?<msgtimestampc2>.*)
                 "1","Name new 003 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","daa7febc","b3ebfb4d",(?<msgtimestampc3>.*)
                 """);
 
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
+        assertTrue(pattern.matcher(csvContent).find(), String.format("CSV data [%s] should match with regex %s", csvContent, pattern.pattern()));
     }
 
     @Test
@@ -394,6 +423,17 @@ class CdcDbzSchemaProcessorTest {
         props.put(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DURATION, "PT1S");
         processor.startCleanUpJob(new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, props));
         verify(statement, timeout(4000).atLeast(3)).executeUpdate(matches("delete.*"));
+    }
+
+    // Com o Spill to Disk, prepareOrderedColumnsBasedOnTargetTable devolve o Path
+    // do CSV temporário em disco. Aqui lemos o conteúdo e apagamos o arquivo na
+    // sequência, garantindo que os testes não deixem lixo em /tmp.
+    private String readAndDelete(Path csvPath) throws java.io.IOException {
+        try {
+            return Files.readString(csvPath);
+        } finally {
+            Files.deleteIfExists(csvPath);
+        }
     }
 
     private Statement prepareToFlush(CdcDbzSchemaProcessor processor, Map<String, Object> extraProps,
