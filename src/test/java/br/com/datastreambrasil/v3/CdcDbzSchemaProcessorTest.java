@@ -11,11 +11,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.quartz.SchedulerException;
 
-import java.sql.Connection;
-import java.sql.DatabaseMetaData;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.sql.*;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoField;
@@ -25,24 +21,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-import static br.com.datastreambrasil.v3.AbstractProcessor.IHBLOCKID;
-import static br.com.datastreambrasil.v3.AbstractProcessor.IHDATETIME;
-import static br.com.datastreambrasil.v3.AbstractProcessor.IHOFFSET;
-import static br.com.datastreambrasil.v3.AbstractProcessor.IHOP;
-import static br.com.datastreambrasil.v3.AbstractProcessor.IHPARTITION;
-import static br.com.datastreambrasil.v3.AbstractProcessor.IHTOPIC;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.assertArg;
-import static org.mockito.ArgumentMatchers.eq;
+import static br.com.datastreambrasil.v3.AbstractProcessor.*;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 import static org.mockito.Mockito.matches;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.timeout;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 class CdcDbzSchemaProcessorTest {
 
@@ -226,10 +209,10 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateDeleteEvents(dt, "5"));
         processor.flush(null);
 
-        verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"), assertArg(c -> assertEquals(769, c.available(), "CSV data length should be 459 bytes")), any(), eq(true));
+        verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"), assertArg(c -> assertEquals(784, c.available(), "CSV data length should be 784 bytes")), any(), eq(true));
+        verify(statementMock, times(1)).executeUpdate(matches("COPY.*"));
         verify(statementMock, times(1)).executeUpdate(matches("MERGE.*"));
         verify(statementMock, times(1)).executeUpdate(matches("DELETE(.*)final.id = ingest.id"));
-        verify(statementMock, times(1)).executeUpdate(matches("COPY.*"));
         assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
     }
 
