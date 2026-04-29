@@ -11,7 +11,11 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.quartz.SchedulerException;
 
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoField;
@@ -21,11 +25,24 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-import static br.com.datastreambrasil.v3.AbstractProcessor.*;
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static br.com.datastreambrasil.v3.AbstractProcessor.IHBLOCKID;
+import static br.com.datastreambrasil.v3.AbstractProcessor.IHDATETIME;
+import static br.com.datastreambrasil.v3.AbstractProcessor.IHOFFSET;
+import static br.com.datastreambrasil.v3.AbstractProcessor.IHOP;
+import static br.com.datastreambrasil.v3.AbstractProcessor.IHPARTITION;
+import static br.com.datastreambrasil.v3.AbstractProcessor.IHTOPIC;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.assertArg;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.matches;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class CdcDbzSchemaProcessorTest {
 
