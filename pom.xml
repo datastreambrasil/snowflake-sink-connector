@@ -86,6 +86,12 @@
             <version>6.0.0</version>
         </dependency>
 
+        <!-- Data compressor map -->
+        <dependency>
+            <groupId>com.esotericsoftware</groupId>
+            <artifactId>kryo</artifactId>
+            <version>5.6.0</version>
+        </dependency>
     </dependencies>
     <build>
         <plugins>

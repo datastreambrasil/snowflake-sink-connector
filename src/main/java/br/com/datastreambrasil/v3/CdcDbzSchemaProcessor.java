@@ -309,8 +309,9 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         boolean loggedDebugForFirstLine = false;
         for (var recordInBuffer : buffer.values()) {
+            var recordData = buffer.deserializeValue(recordInBuffer);
             var count = 0;
-            var op = recordInBuffer.op();
+            var op = recordData.op();
 
             if (debeziumOperation.d.toString().equalsIgnoreCase(op)) {
                 flushHasDeletedRecords = true;
@@ -330,22 +331,22 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     var strBuffer = "\"" + blockID + "\"";
                     stringBuilder.append(strBuffer);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOP)) {
-                    var strBuffer = "\"" + recordInBuffer.op() + "\"";
+                    var strBuffer = "\"" + recordData.op() + "\"";
                     stringBuilder.append(strBuffer);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHTOPIC)) {
-                    var strBuffer = "\"" + recordInBuffer.topic() + "\"";
+                    var strBuffer = "\"" + recordData.topic() + "\"";
                     stringBuilder.append(strBuffer);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHDATETIME)) {
-                    var strBuffer = "\"" + recordInBuffer.timestamp() + "\"";
+                    var strBuffer = "\"" + recordData.timestamp() + "\"";
                     stringBuilder.append(strBuffer);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHPARTITION)) {
-                    var strBuffer = "\"" + recordInBuffer.partition() + "\"";
+                    var strBuffer = "\"" + recordData.partition() + "\"";
                     stringBuilder.append(strBuffer);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOFFSET)) {
-                    var strBuffer = "\"" + recordInBuffer.offset() + "\"";
+                    var strBuffer = "\"" + recordData.offset() + "\"";
                     stringBuilder.append(strBuffer);
                 } else {
-                    var fieldCaseInsensitive = recordInBuffer.event().schema().fields().stream().filter(field ->
+                    var fieldCaseInsensitive = recordData.event().schema().fields().stream().filter(field ->
                             field.name().equalsIgnoreCase(columnFromSnowflakeTable)).findFirst();
                     String searchColumn;
                     if (fieldCaseInsensitive.isEmpty()) {
@@ -355,7 +356,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                         searchColumn = fieldCaseInsensitive.get().name();
                     }
 
-                    Object valueFromRecord = recordInBuffer.event().get(searchColumn);
+                    Object valueFromRecord = recordData.event().get(searchColumn);
                     if (valueFromRecord != null) {
                         if (containsAny(columnFromSnowflakeTable, timestampFieldsConvert)) {
                             var valueFromRecordAsLong = (long) valueFromRecord;

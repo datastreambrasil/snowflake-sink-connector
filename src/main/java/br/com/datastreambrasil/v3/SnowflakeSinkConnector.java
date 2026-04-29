@@ -32,6 +32,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CONSUMER_OVERRIDE_MAX_POLL_RECORDS = "consumer.override.max.poll.records";
     protected static final String CONSUMER_OVERRIDE_MAX_POLL_INTERVAL_MS = "consumer.override.max.poll.interval.ms";
     protected static final String TMP_DATA_FOLDER = "tmp_data_folder";
+    protected static final String BUFFER_INITIAL_CAPACITY = "buffer_initial_capacity";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -98,7 +99,10 @@ public class SnowflakeSinkConnector extends SinkConnector {
                         "If the time expires, the broker understands that the consumer has died and triggers rebalancing in the consumer group.")
         .define(TMP_DATA_FOLDER, ConfigDef.Type.STRING, "/mnt/data/csv_data_to_stage",
                 ConfigDef.Importance.MEDIUM,
-                "Destination directory for the data to be sent to the stage for ingestion into the tables via COPY");
+                "Destination directory for the data to be sent to the stage for ingestion into the tables via COPY")
+        .define(BUFFER_INITIAL_CAPACITY, ConfigDef.Type.INT, 1000000,
+                ConfigDef.Importance.HIGH,
+                "The initial buffer capacity.");
 
     private Map<String, String> props;
 

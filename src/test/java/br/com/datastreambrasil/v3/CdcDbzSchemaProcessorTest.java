@@ -1,5 +1,7 @@
 package br.com.datastreambrasil.v3;
 
+import br.com.datastreambrasil.v3.compress.CompressedMap;
+import br.com.datastreambrasil.v3.compress.KryoFactory;
 import br.com.datastreambrasil.v3.exception.InvalidStructException;
 import net.snowflake.client.jdbc.SnowflakeConnection;
 import net.snowflake.client.jdbc.internal.apache.commons.io.IOUtils;
@@ -77,6 +79,7 @@ class CdcDbzSchemaProcessorTest {
     @Test
     void testPutSuccess() {
         var processor = new CdcDbzSchemaProcessor();
+        processor.buffer = new CompressedMap<>(new KryoFactory(), 10);
         var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
         processor.put(generateCreateEvents(dt, "1", "2", "3"));
         processor.put(generateUpdateEvents(dt, "update 001", "10"));//this update should be ignored, because it will be overridden by the next update event
@@ -257,8 +260,8 @@ class CdcDbzSchemaProcessorTest {
                 "2","Name 2","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",(?<msgtimestampd>.*)
                 """);
         var fileData = IOUtils.toString(Files.newInputStream(csvBaos), "UTF-8");
-        assertTrue(pattern.matcher(fileData).find(), String.format("CSV data [%s] should match with regex %s", fileData, pattern.pattern()));
         Files.deleteIfExists(Path.of("/mnt/data/csv_data_to_stage/stage_teste.csv"));
+        assertTrue(pattern.matcher(fileData).find(), String.format("CSV data [%s] should match with regex %s", fileData, pattern.pattern()));
     }
 
     @Test

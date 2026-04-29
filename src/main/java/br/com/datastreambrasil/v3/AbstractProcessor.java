@@ -1,5 +1,7 @@
 package br.com.datastreambrasil.v3;
 
+import br.com.datastreambrasil.v3.compress.CompressedMap;
+import br.com.datastreambrasil.v3.compress.KryoFactory;
 import br.com.datastreambrasil.v3.model.SnowflakeRecord;
 import net.snowflake.client.jdbc.SnowflakeConnection;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -14,7 +16,6 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -35,7 +36,7 @@ public abstract class AbstractProcessor {
     protected List<String> timestampFieldsConvert = new ArrayList<>();
     protected List<String> dateFieldsConvert = new ArrayList<>();
     protected List<String> timeFieldsConvert = new ArrayList<>();
-    protected final Map<String, SnowflakeRecord> buffer = new HashMap<>();
+    protected CompressedMap<SnowflakeRecord> buffer;
     protected String tmpDataFolder;
 
     protected static final String AFTER = "after";
@@ -94,6 +95,8 @@ public abstract class AbstractProcessor {
         ignoreColumns.addAll(config.getList(SnowflakeSinkConnector.CFG_IGNORE_COLUMNS));
 
         tmpDataFolder = config.getString(SnowflakeSinkConnector.TMP_DATA_FOLDER);
+
+        buffer = new CompressedMap<>(new KryoFactory(), config.getInt(SnowflakeSinkConnector.BUFFER_INITIAL_CAPACITY));
     }
 
     protected void setupSnowflakeConnection(AbstractConfig config) {
