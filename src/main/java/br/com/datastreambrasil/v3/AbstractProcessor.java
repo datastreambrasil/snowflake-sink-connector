@@ -36,7 +36,7 @@ public abstract class AbstractProcessor {
     protected List<String> dateFieldsConvert = new ArrayList<>();
     protected List<String> timeFieldsConvert = new ArrayList<>();
     protected final Map<String, SnowflakeRecord> buffer = new HashMap<>();
-
+    protected String tmpDataFolder;
 
     protected static final String AFTER = "after";
     protected static final String BEFORE = "before";
@@ -93,6 +93,7 @@ public abstract class AbstractProcessor {
         timeFieldsConvert.addAll(config.getList(SnowflakeSinkConnector.CFG_TIME_FIELDS_CONVERT));
         ignoreColumns.addAll(config.getList(SnowflakeSinkConnector.CFG_IGNORE_COLUMNS));
 
+        tmpDataFolder = config.getString(SnowflakeSinkConnector.TMP_DATA_FOLDER);
     }
 
     protected void setupSnowflakeConnection(AbstractConfig config) {

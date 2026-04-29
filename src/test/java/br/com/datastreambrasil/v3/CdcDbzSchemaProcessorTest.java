@@ -2,6 +2,7 @@ package br.com.datastreambrasil.v3;
 
 import br.com.datastreambrasil.v3.exception.InvalidStructException;
 import net.snowflake.client.jdbc.SnowflakeConnection;
+import net.snowflake.client.jdbc.internal.apache.commons.io.IOUtils;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
@@ -11,6 +12,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.quartz.SchedulerException;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
@@ -32,6 +36,7 @@ import static br.com.datastreambrasil.v3.AbstractProcessor.IHOP;
 import static br.com.datastreambrasil.v3.AbstractProcessor.IHPARTITION;
 import static br.com.datastreambrasil.v3.AbstractProcessor.IHTOPIC;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -217,7 +222,7 @@ class CdcDbzSchemaProcessorTest {
     }
 
     @Test
-    void testFlushWithSuccess() throws SQLException {
+    void testFlushWithSuccess() throws SQLException, IOException {
         var processor = new CdcDbzSchemaProcessor();
         var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
         var statementMock = prepareToFlush(processor);
@@ -226,11 +231,14 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateDeleteEvents(dt, "5"));
         processor.flush(null);
 
-        verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"), assertArg(c -> assertEquals(784, c.available(), "CSV data length should be 784 bytes")), any(), eq(true));
+        verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"),
+                assertArg(c -> assertNotNull(c, "CSV data stream should should not be null")), any(), eq(true));
         verify(statementMock, times(1)).executeUpdate(matches("COPY.*"));
         verify(statementMock, times(1)).executeUpdate(matches("MERGE.*"));
         verify(statementMock, times(1)).executeUpdate(matches("DELETE(.*)final.id = ingest.id"));
         assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
+        assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage")));
+        assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage")).toList().isEmpty());
     }
 
     @Test
@@ -241,13 +249,16 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateCreateEvents(dt, "1"));
         processor.put(generateDeleteEvents(dt, "2"));
         var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME));
+        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID,
+                List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME),
+                "stage_teste.csv");
         var pattern = Pattern.compile("""
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111",(?<msgtimestampc>.*)
                 "2","Name 2","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",(?<msgtimestampd>.*)
                 """);
-
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
+        var fileData = IOUtils.toString(Files.newInputStream(csvBaos), "UTF-8");
+        assertTrue(pattern.matcher(fileData).find(), String.format("CSV data [%s] should match with regex %s", fileData, pattern.pattern()));
+        Files.deleteIfExists(Path.of("/mnt/data/csv_data_to_stage/stage_teste.csv"));
     }
 
     @Test
@@ -417,5 +428,4 @@ class CdcDbzSchemaProcessorTest {
 
         return records;
     }
-
 }

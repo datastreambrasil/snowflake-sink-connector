@@ -16,9 +16,10 @@ import org.quartz.SimpleScheduleBuilder;
 import org.quartz.TriggerBuilder;
 import org.quartz.impl.StdSchedulerFactory;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -119,6 +120,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         }
 
         var destFileName = UUID.randomUUID().toString();
+        Path tmpFilePathToInsert = null;
         try {
             LOGGER.debug("Preparing to send {} records from buffer. To stage {} and table {}", buffer.size(), stageName,
                     tableName);
@@ -126,8 +128,10 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             var columnsFromMetadata = columnsIngestTable;
             var blockID = UUID.randomUUID().toString();
             var startTimeMain = System.currentTimeMillis();
-            try (var csvToInsert = prepareOrderedColumnsBasedOnTargetTable(blockID, columnsFromMetadata);
-                 var inputStream = new ByteArrayInputStream(csvToInsert.toByteArray())) {
+            tmpFilePathToInsert = prepareOrderedColumnsBasedOnTargetTable(blockID, columnsFromMetadata,
+                    String.format("%s_%s.csv", stageName, destFileName));
+
+            try (var inputStream = Files.newInputStream(tmpFilePathToInsert)) {
 
                 var startTimeUpload = System.currentTimeMillis();
                 snowflakeConnection.uploadStream(stageName, "/", inputStream,
@@ -144,8 +148,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
                     stmt.executeUpdate(copyInto);
 
-                    // Resets the CSV ByteArray to zero, so that all currently accumulated stream is discarded after SnowFlake upload and COPY to ingest table.
-                    this.discardCsvData(inputStream, csvToInsert, destFileName, stageName);
+                    // Resets the CSV input stream to zero, so that all currently accumulated stream is discarded after SnowFlake upload and COPY to ingest table.
+                    this.discardCsvData(tmpFilePathToInsert);
 
                     if (flushHasInsertedRecords || flushHasUpdatedRecords) {
                         //insert/update in final table
@@ -181,6 +185,16 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         } catch (Throwable e) {
             LOGGER.error("Error while flushing Snowflake connector", e);
+
+            if (tmpFilePathToInsert != null) {
+                try {
+                    Files.deleteIfExists(tmpFilePathToInsert);
+                } catch (IOException ex) {
+                    LOGGER.error("Temp file: {} not found after flushing Snowflake connector",
+                            tmpFilePathToInsert.getFileName().toString(), ex);
+                }
+            }
+
             throw new RuntimeException("Error while flushing", e);
         } finally {
             var endTime = System.currentTimeMillis();
@@ -189,11 +203,11 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         }
     }
 
-    private void discardCsvData(ByteArrayInputStream inputStream, ByteArrayOutputStream csvToInsert, String destFileName, String stageName) {
-        LOGGER.debug("Discard CSV byte array data: {} of stage: {} after SnowFlake upload and COPY to ingest table.", destFileName, stageName);
-        inputStream.reset();
-        csvToInsert.reset();
-        LOGGER.debug("Discarded CSV byte array data: {} of stage: {}. CSV Data is {}", destFileName, stageName, csvToInsert.size());
+    private void discardCsvData(Path csvToInsert) throws IOException {
+        LOGGER.debug("Discard CSV file data: {} of stage: {} after SnowFlake upload and COPY to ingest table.",
+                csvToInsert.getFileName().toString(), stageName);
+        Files.deleteIfExists(csvToInsert);
+        LOGGER.debug("Discarded CSV file data: {} of stage: {}.", csvToInsert.getFileName().toString(), stageName);
     }
 
     @Override
@@ -284,10 +298,9 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 .reduce((a, b) -> a + " and " + b).orElseThrow();
     }
 
-    protected ByteArrayOutputStream prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable) throws Throwable {
+    protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable, String tmpFileName) throws Throwable {
 
         var startTime = System.currentTimeMillis();
-        var csvInMemory = new ByteArrayOutputStream();
         var stringBuilder = new StringBuilder();
 
         flushHasDeletedRecords = false;
@@ -382,12 +395,17 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             }
         }
 
-        if (!stringBuilder.isEmpty()) {
-            csvInMemory.write(stringBuilder.toString().getBytes(StandardCharsets.UTF_8));
-        }
+        Files.createDirectories(Path.of(tmpDataFolder));
+
+        var tmpPath = Path.of(String.format("%s/%s", tmpDataFolder, tmpFileName));
+        Files.deleteIfExists(tmpPath);
+
+        var resultPath = Files.writeString(tmpPath, stringBuilder.toString(), StandardOpenOption.CREATE);
+
         var endTime = System.currentTimeMillis();
-        LOGGER.debug("Prepared csv in memory in {} ms", endTime - startTime);
-        return csvInMemory;
+        LOGGER.debug("Prepared csv in file in {} ms", endTime - startTime);
+
+        return resultPath;
     }
 
 
