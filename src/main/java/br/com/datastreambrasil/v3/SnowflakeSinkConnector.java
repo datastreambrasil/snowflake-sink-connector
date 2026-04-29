@@ -29,6 +29,8 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_REDIS_PORT = "redis_port";
     protected static final String CFG_REDIS_KEY_TTL_SECONDS = "redis_key_ttl_seconds";
     protected static final String CFG_PROFILE = "profile";
+    protected static final String CONSUMER_OVERRIDE_MAX_POLL_RECORDS = "consumer.override.max.poll.records";
+    protected static final String CONSUMER_OVERRIDE_MAX_POLL_INTERVAL_MS = "consumer.override.max.poll.interval.ms";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -85,7 +87,14 @@ public class SnowflakeSinkConnector extends SinkConnector {
             "Profile to use for the connector. Might be one of: cdc_schema, cdc_schemaless, bulk_schemaless")
         .define(CFG_TRUNCATE_WHEN_NODATA_AFTER_SECONDS, ConfigDef.Type.INT, 1800,
             ConfigDef.Importance.HIGH,
-            "If we don't receive any event for this amount of time, we will truncate the table in snowflake");
+            "If we don't receive any event for this amount of time, we will truncate the table in snowflake")
+        .define(CONSUMER_OVERRIDE_MAX_POLL_RECORDS, ConfigDef.Type.INT, 500,
+                ConfigDef.Importance.MEDIUM,
+                "Limits the records that KafkaConsumer retrieves from the broker — before they reach the connector.")
+        .define(CONSUMER_OVERRIDE_MAX_POLL_INTERVAL_MS, ConfigDef.Type.STRING, "300000",
+                ConfigDef.Importance.MEDIUM,
+                "Limits the time the broker will wait for the connector processing to finish — " +
+                        "If the time expires, the broker understands that the consumer has died and triggers rebalancing in the consumer group.");
 
     private Map<String, String> props;
 
