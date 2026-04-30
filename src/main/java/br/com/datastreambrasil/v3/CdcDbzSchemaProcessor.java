@@ -32,6 +32,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.TimeZone;
 import java.util.UUID;
@@ -263,7 +264,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         return pks;
     }
 
-
     private String convertPKToStringKey(SinkRecord record) {
         var keyStruct = (Struct) record.key();
         var pkValues = new ArrayList<String>();
@@ -294,11 +294,10 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     private String buildPkWhereClause(List<String> pks) {
         return pks.stream()
                 .map(col -> String.format("final.%s = ingest.%s", col, col))
-                .reduce((a, b) -> a + " and " + b).orElseThrow();
+                .reduce((a, b) -> String.format("%s and %s", a, b)).orElseThrow();
     }
 
     protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable, String tmpFileName) throws Throwable {
-
         var startTime = System.currentTimeMillis();
         var stringBuilder = new StringBuilder();
 
@@ -408,14 +407,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         return resultPath;
     }
 
-
     private boolean containsAny(String checkValue, List<String> values) {
-        for (String s : values) {
-            if (s.trim().equalsIgnoreCase(checkValue.trim())) {
-                return true;
-            }
-        }
-
-        return false;
+        return Optional.ofNullable(values).orElse(List.of()).stream()
+                .anyMatch(s -> s.trim().equalsIgnoreCase(checkValue.trim()));
     }
 }

@@ -132,7 +132,6 @@ public abstract class AbstractProcessor {
 
         LOGGER.debug("Columns mapped from target table: {}", String.join(",", columnsNoDuplicate));
 
-
         return columnsNoDuplicate;
     }
 }

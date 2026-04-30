@@ -99,7 +99,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
                         "If the time expires, the broker understands that the consumer has died and triggers rebalancing in the consumer group.")
         .define(TMP_DATA_FOLDER, ConfigDef.Type.STRING, "/mnt/data/csv_data_to_stage",
                 ConfigDef.Importance.MEDIUM,
-                "Destination directory for the data to be sent to the stage for ingestion into the tables via COPY")
+                "Destination directory for the data to be sent to the stage for ingestion into the tables by COPY")
         .define(BUFFER_INITIAL_CAPACITY, ConfigDef.Type.INT, 1000000,
                 ConfigDef.Importance.HIGH,
                 "The initial buffer capacity.");
@@ -126,7 +126,6 @@ public class SnowflakeSinkConnector extends SinkConnector {
             }
 
             configs.add(propsTask);
-
         }
         return configs;
     }
