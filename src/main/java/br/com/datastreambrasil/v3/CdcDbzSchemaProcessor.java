@@ -401,6 +401,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         LOGGER.debug("Prepared csv in file in {} ms", System.currentTimeMillis() - startTime);
 
+        stringBuilder.delete(0, stringBuilder.length());
+
         return resultPath;
     }
 
