@@ -5,16 +5,13 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
-// infra/CompressedMap.java
 public class CompressedMap<V> {
 
-    // UnifiedMap: open-addressing, sem Entry objects, ~30% mais compacto que HashMap
     private final Map<String, byte[]> store;
     private final KryoFactory kryoFactory;
 
     public CompressedMap(KryoFactory kryoFactory, int initialCapacity) {
         this.kryoFactory = kryoFactory;
-        // UnifiedMap com capacidade inicial correta elimina rehashing
         this.store = new LinkedHashMap<>(initialCapacity);
     }
 
