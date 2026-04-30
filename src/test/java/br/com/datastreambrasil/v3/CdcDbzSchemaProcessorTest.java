@@ -90,25 +90,33 @@ class CdcDbzSchemaProcessorTest {
 
         var itemIdx = "1";
         //assert item create
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().get("Id"));
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().get("Name"));
+        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Id")).findFirst().get().data());
+        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Name")).findFirst().get().data());
         assertEquals("c", processor.buffer.get(itemIdx).op());
 
         //assert item update
         itemIdx = "10";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().get("Id"));
-        assertEquals("Name update 002 " + itemIdx, processor.buffer.get(itemIdx).event().get("Name"));
+        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Id")).findFirst().get().data());
+        assertEquals("Name update 002 " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Name")).findFirst().get().data());
         assertEquals("u", processor.buffer.get(itemIdx).op());
 
         //asert item delete
         itemIdx = "20";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().get("Id"));
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().get("Name"));
+        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Id")).findFirst().get().data());
+        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Name")).findFirst().get().data());
         assertEquals("d", processor.buffer.get(itemIdx).op());
 
         itemIdx = "3";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().get("Id"));
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().get("Name"));
+        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Id")).findFirst().get().data());
+        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Name")).findFirst().get().data());
         assertEquals("d", processor.buffer.get(itemIdx).op());
     }
 

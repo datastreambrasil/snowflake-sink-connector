@@ -1,6 +1,7 @@
 package br.com.datastreambrasil.v3;
 
 import br.com.datastreambrasil.v3.exception.InvalidStructException;
+import br.com.datastreambrasil.v3.model.FieldRecord;
 import br.com.datastreambrasil.v3.model.SnowflakeRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -82,9 +83,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 throw new InvalidStructException("Value for field '" + OP + "' is null");
             }
 
-
             var recordToSnowflake = new SnowflakeRecord(
-                    debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER),
+                    this.prepareEvent(debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER)),
                     record.topic(),
                     record.kafkaPartition(),
                     record.kafkaOffset(),
@@ -95,6 +95,12 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             LOGGER.trace("Added record to buffer: {} with operation {}", recordToSnowflake, valueOP);
             buffer.put(convertPKToStringKey(record), recordToSnowflake);
         }
+    }
+
+    private List<FieldRecord> prepareEvent(Struct struct) {
+        var fields = new ArrayList<FieldRecord>(struct.schema().fields().size());
+        struct.schema().fields().forEach(fs -> fields.add(new FieldRecord(fs.name(), struct.get(fs.name()))));
+        return fields;
     }
 
     private boolean validate(SinkRecord record) {
@@ -324,7 +330,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             }
 
             for (String columnFromSnowflakeTable : columnsFromTable) {
-
                 if (columnFromSnowflakeTable.equalsIgnoreCase(IHBLOCKID)) {
                     var strBuffer = "\"" + blockID + "\"";
                     stringBuilder.append(strBuffer);
@@ -344,18 +349,10 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     var strBuffer = "\"" + recordData.offset() + "\"";
                     stringBuilder.append(strBuffer);
                 } else {
-                    var fieldCaseInsensitive = recordData.event().schema().fields().stream().filter(field ->
+                    Optional<FieldRecord> fieldRecord = recordData.event().stream().filter(field ->
                             field.name().equalsIgnoreCase(columnFromSnowflakeTable)).findFirst();
-                    String searchColumn;
-                    if (fieldCaseInsensitive.isEmpty()) {
-                        LOGGER.warn("Column {} not found on record schema, fallback to snowflake original column name", columnFromSnowflakeTable);
-                        searchColumn = columnFromSnowflakeTable;
-                    } else {
-                        searchColumn = fieldCaseInsensitive.get().name();
-                    }
-
-                    Object valueFromRecord = recordData.event().get(searchColumn);
-                    if (valueFromRecord != null) {
+                    if (fieldRecord.isPresent() && fieldRecord.get().data() != null) {
+                        Object valueFromRecord = fieldRecord.get().data();
                         if (containsAny(columnFromSnowflakeTable, timestampFieldsConvert)) {
                             var valueFromRecordAsLong = (long) valueFromRecord;
                             valueFromRecord = LocalDateTime.ofInstant(Instant.ofEpochMilli(valueFromRecordAsLong),

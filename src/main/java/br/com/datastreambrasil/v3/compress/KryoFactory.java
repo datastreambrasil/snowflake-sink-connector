@@ -1,15 +1,12 @@
 package br.com.datastreambrasil.v3.compress;
 
 import br.com.datastreambrasil.v3.compress.serializer.LocalDateTimeSerializer;
-import br.com.datastreambrasil.v3.compress.serializer.SchemaSerializer;
-import br.com.datastreambrasil.v3.compress.serializer.StructSerializer;
+import br.com.datastreambrasil.v3.model.FieldRecord;
 import br.com.datastreambrasil.v3.model.SnowflakeRecord;
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import com.esotericsoftware.kryo.util.Pool;
-import org.apache.kafka.connect.data.Schema;
-import org.apache.kafka.connect.data.Struct;
 
 import java.time.LocalDateTime;
 
@@ -28,8 +25,7 @@ public class KryoFactory {
                 // registrar classes frequentes para eliminar overhead de nome completo
                 kryo.register(SnowflakeRecord.class, 10);
                 kryo.register(LocalDateTime.class, new LocalDateTimeSerializer(), 11);
-                kryo.register(Struct.class,  new StructSerializer(),  12);
-                kryo.register(Schema.class,  new SchemaSerializer(),  13);
+                kryo.register(FieldRecord.class, 12);
                 return kryo;
             }
         };
