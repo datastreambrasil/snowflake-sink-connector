@@ -372,9 +372,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                         }
 
                         valueFromRecord = valueFromRecord.toString().replaceAll("\"", "\"\"");
-                        var strBuffer = "\"" + valueFromRecord + "\"";
-                        stringBuilder.append(strBuffer);
-
+                        stringBuilder.append("\"").append(valueFromRecord).append("\"");
                     } else {
                         LOGGER.warn("Column {} not found on buffer, inserted empty value", columnFromSnowflakeTable);
                     }
@@ -387,7 +385,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 count++;
             }
 
-
             stringBuilder.append("\n");
             if (!loggedDebugForFirstLine && LOGGER.isDebugEnabled()) {
                 LOGGER.debug("First lines of csv: {}", stringBuilder);
@@ -395,6 +392,10 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             }
         }
 
+        return this.generateTempFile(stringBuilder, startTime, tmpFileName);
+    }
+
+    private Path generateTempFile(StringBuilder stringBuilder, long startTime, String tmpFileName) throws IOException {
         Files.createDirectories(Path.of(tmpDataFolder));
 
         var tmpPath = Path.of(String.format("%s/%s", tmpDataFolder, tmpFileName));
@@ -402,8 +403,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         var resultPath = Files.writeString(tmpPath, stringBuilder.toString(), StandardOpenOption.CREATE);
 
-        var endTime = System.currentTimeMillis();
-        LOGGER.debug("Prepared csv in file in {} ms", endTime - startTime);
+        LOGGER.debug("Prepared csv in file in {} ms", System.currentTimeMillis() - startTime);
 
         return resultPath;
     }
