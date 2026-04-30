@@ -132,10 +132,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     String.format("%s_%s.csv", stageName, destFileName));
 
             try (var inputStream = Files.newInputStream(tmpFilePathToInsert)) {
-
                 var startTimeUpload = System.currentTimeMillis();
-                snowflakeConnection.uploadStream(stageName, "/", inputStream,
-                        destFileName, true);
+                snowflakeConnection.uploadStream(stageName, "/", inputStream, destFileName, true);
                 var endTimeUpload = System.currentTimeMillis();
                 LOGGER.debug("Uploaded {} records in {} ms", buffer.size(), endTimeUpload - startTimeUpload);
 
@@ -143,12 +141,12 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 try (var stmt = connection.createStatement()) {
 
                     //copy everything to ingest
-                    String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName, String.join(",", columnsFromMetadata),
-                            stageName, destFileName);
+                    String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName,
+                            String.join(",", columnsFromMetadata), stageName, destFileName);
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
                     stmt.executeUpdate(copyInto);
 
-                    // Resets the CSV input stream to zero, so that all currently accumulated stream is discarded after SnowFlake upload and COPY to ingest table.
+                    // Delete temp file after SnowFlake upload and COPY to ingest table.
                     this.discardCsvData(tmpFilePathToInsert);
 
                     if (flushHasInsertedRecords || flushHasUpdatedRecords) {
@@ -157,7 +155,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                                         "WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s) " +
                                         "WHEN MATCHED THEN UPDATE SET %s",
                                 tableName, buildExcludeColumns(), ingestTableName, blockID,
-                                buildPkWhereClause(pks), String.join(",", columnsFinalTable), String.join(",", columnsFinalTable.stream().map(c -> "ingest." + c).toList()),
+                                buildPkWhereClause(pks), String.join(",", columnsFinalTable),
+                                String.join(",", columnsFinalTable.stream().map(c -> "ingest." + c).toList()),
                                 buildUpdateColumns());
                         LOGGER.debug("Merging statement to final table: {}", merge);
                         stmt.executeUpdate(merge);
@@ -190,7 +189,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 try {
                     Files.deleteIfExists(tmpFilePathToInsert);
                 } catch (IOException ex) {
-                    LOGGER.error("Temp file: {} not found after flushing Snowflake connector",
+                    LOGGER.warn("Temp file: {} not found after flushing Snowflake connector",
                             tmpFilePathToInsert.getFileName().toString(), ex);
                 }
             }
@@ -294,7 +293,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     private String buildPkWhereClause(List<String> pks) {
         return pks.stream()
-                .map(col -> String.format("%s.%s = %s.%s", "final", col, "ingest", col))
+                .map(col -> String.format("final.%s = ingest.%s", col, col))
                 .reduce((a, b) -> a + " and " + b).orElseThrow();
     }
 
