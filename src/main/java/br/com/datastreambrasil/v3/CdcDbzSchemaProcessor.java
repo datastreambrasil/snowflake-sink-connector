@@ -245,7 +245,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         jobData.put(CleanupJob.INGEST_TABLE_NAME, ingestTableName);
 
         var props = new Properties();
-        props.setProperty(StdSchedulerFactory.PROP_SCHED_INSTANCE_NAME, "cleanup_" + UUID.randomUUID());
+        props.setProperty(StdSchedulerFactory.PROP_SCHED_INSTANCE_NAME, String.format("cleanup_%s", UUID.randomUUID()));
         props.setProperty("org.quartz.threadPool.threadCount", "1");
 
         var schedulerFactory = new StdSchedulerFactory(props);
@@ -331,23 +331,29 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
             for (String columnFromSnowflakeTable : columnsFromTable) {
                 if (columnFromSnowflakeTable.equalsIgnoreCase(IHBLOCKID)) {
-                    var strBuffer = "\"" + blockID + "\"";
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(blockID)
+                            .append(DOUBLE_QUOTE);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOP)) {
-                    var strBuffer = "\"" + recordData.op() + "\"";
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(recordData.op())
+                            .append(DOUBLE_QUOTE);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHTOPIC)) {
-                    var strBuffer = "\"" + recordData.topic() + "\"";
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(recordData.topic())
+                            .append(DOUBLE_QUOTE);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHDATETIME)) {
-                    var strBuffer = "\"" + recordData.timestamp() + "\"";
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(recordData.timestamp())
+                            .append(DOUBLE_QUOTE);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHPARTITION)) {
-                    var strBuffer = "\"" + recordData.partition() + "\"";
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(recordData.partition())
+                            .append(DOUBLE_QUOTE);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOFFSET)) {
-                    var strBuffer = "\"" + recordData.offset() + "\"";
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(recordData.offset())
+                            .append(DOUBLE_QUOTE);
                 } else {
                     Optional<FieldRecord> fieldRecord = recordData.event().stream().filter(field ->
                             field.name().equalsIgnoreCase(columnFromSnowflakeTable)).findFirst();
@@ -367,21 +373,21 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                             valueFromRecord = LocalTime.ofNanoOfDay(valueFromRecordAsLong).toString();
                         }
 
-                        valueFromRecord = valueFromRecord.toString().replaceAll("\"", "\"\"");
-                        stringBuilder.append("\"").append(valueFromRecord).append("\"");
+                        valueFromRecord = valueFromRecord.toString().replaceAll(DOUBLE_QUOTE, REGEX_REPLACEMENT_QUOTE_VALUE);
+                        stringBuilder.append(DOUBLE_QUOTE).append(valueFromRecord).append(DOUBLE_QUOTE);
                     } else {
                         LOGGER.warn("Column {} not found on buffer, inserted empty value", columnFromSnowflakeTable);
                     }
                 }
 
                 if (count < columnsFromTable.size() - 1) {
-                    stringBuilder.append(",");
+                    stringBuilder.append(LINE_SEPARATOR_COMMA);
                 }
 
                 count++;
             }
 
-            stringBuilder.append("\n");
+            stringBuilder.append(BREAK_LINE);
             if (!loggedDebugForFirstLine && LOGGER.isDebugEnabled()) {
                 LOGGER.debug("First lines of csv: {}", stringBuilder);
                 loggedDebugForFirstLine = true;

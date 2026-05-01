@@ -49,6 +49,11 @@ public abstract class AbstractProcessor {
     protected static final String IHDATETIME = "ih_datetime";
     protected static final String IHBLOCKID = "ih_blockid";
 
+    protected static final String DOUBLE_QUOTE = "\"";
+    protected static final String BREAK_LINE = "\n";
+    protected static final String REGEX_REPLACEMENT_QUOTE_VALUE = "\"\"";
+    protected static final String LINE_SEPARATOR_COMMA = ",";
+
     protected enum debeziumOperation {
         d,
         c,
@@ -130,7 +135,7 @@ public abstract class AbstractProcessor {
         //remove duplicated
         var columnsNoDuplicate = columnsFromTable.stream().distinct().toList();
 
-        LOGGER.debug("Columns mapped from target table: {}", String.join(",", columnsNoDuplicate));
+        LOGGER.debug("Columns mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsNoDuplicate));
 
         return columnsNoDuplicate;
     }
