@@ -248,8 +248,8 @@ class CdcDbzSchemaProcessorTest {
         verify(statementMock, times(1)).executeUpdate(matches("MERGE.*"));
         verify(statementMock, times(1)).executeUpdate(matches("DELETE(.*)final.id = ingest.id"));
         assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
-        assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage")));
-        assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage")).toList().isEmpty());
+        assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_stage")));
+        assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList().isEmpty());
     }
 
     @Test
@@ -261,14 +261,16 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateDeleteEvents(dt, "2"));
         var blockID = "111";
         var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID,
-                List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME),
-                "stage_teste.csv");
+                List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME));
         var pattern = Pattern.compile("""
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111",(?<msgtimestampc>.*)
                 "2","Name 2","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",(?<msgtimestampd>.*)
                 """);
         var fileData = IOUtils.toString(Files.newInputStream(csvBaos), "UTF-8");
-        Files.deleteIfExists(Path.of("/mnt/data/csv_data_to_stage/stage_teste.csv"));
+        var files = Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList();
+        for (Path f : files) {
+            Files.deleteIfExists(Path.of(f.toFile().getAbsolutePath()));
+        }
         assertTrue(pattern.matcher(fileData).find(), String.format("CSV data [%s] should match with regex %s", fileData, pattern.pattern()));
     }
 

@@ -135,8 +135,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             var columnsFromMetadata = columnsIngestTable;
             var blockID = UUID.randomUUID().toString();
             var startTimeMain = System.currentTimeMillis();
-            tmpFilePathToInsert = prepareOrderedColumnsBasedOnTargetTable(blockID, columnsFromMetadata,
-                    String.format("%s_%s.csv", stageName, destFileName));
+            tmpFilePathToInsert = prepareOrderedColumnsBasedOnTargetTable(blockID, columnsFromMetadata);
 
             try (var inputStream = Files.newInputStream(tmpFilePathToInsert)) {
                 var startTimeUpload = System.currentTimeMillis();
@@ -303,7 +302,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 .reduce((a, b) -> String.format("%s and %s", a, b)).orElseThrow();
     }
 
-    protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable, String tmpFileName) throws Throwable {
+    protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable) throws Throwable {
         var startTime = System.currentTimeMillis();
         var stringBuilder = new StringBuilder();
 
@@ -394,13 +393,13 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             }
         }
 
-        return this.generateTempFile(stringBuilder, startTime, tmpFileName);
+        return this.generateTempFile(stringBuilder, startTime);
     }
 
-    private Path generateTempFile(StringBuilder stringBuilder, long startTime, String tmpFileName) throws IOException {
-        Files.createDirectories(Path.of(tmpDataFolder));
+    private Path generateTempFile(StringBuilder stringBuilder, long startTime) throws IOException {
+        Files.createDirectories(Path.of(String.format("%s/%s", tmpDataFolder, stageName)));
 
-        var tmpPath = Path.of(String.format("%s/%s", tmpDataFolder, tmpFileName));
+        var tmpPath = Path.of(String.format("%s/%s/%s.csv", tmpDataFolder, stageName, UUID.randomUUID()));
         Files.deleteIfExists(tmpPath);
 
         var resultPath = Files.writeString(tmpPath, stringBuilder.toString(), StandardOpenOption.CREATE);
