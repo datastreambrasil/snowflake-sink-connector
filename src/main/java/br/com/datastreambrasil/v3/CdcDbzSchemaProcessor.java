@@ -304,7 +304,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable) throws Throwable {
         var startTime = System.currentTimeMillis();
-        var stringBuilder = new StringBuilder();
+        var stringBuilder = new StringBuilder(buffer.size() * SB_CSV_INITIAL_SIZE);
 
         flushHasDeletedRecords = false;
         flushHasUpdatedRecords = false;
@@ -392,6 +392,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 loggedDebugForFirstLine = true;
             }
         }
+
+        stringBuilder.trimToSize();
 
         return this.generateTempFile(stringBuilder, startTime);
     }

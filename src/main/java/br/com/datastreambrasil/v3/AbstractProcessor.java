@@ -53,6 +53,7 @@ public abstract class AbstractProcessor {
     protected static final String BREAK_LINE = "\n";
     protected static final String REGEX_REPLACEMENT_QUOTE_VALUE = "\"\"";
     protected static final String LINE_SEPARATOR_COMMA = ",";
+    protected static final int SB_CSV_INITIAL_SIZE = 1000;
 
     protected enum debeziumOperation {
         d,
