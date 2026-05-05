@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>br.com.datastreambrasil</groupId>
   <artifactId>snowflake-sink-connector</artifactId>
-  <version>3.5.0</version>
+  <version>3.6.0</version>
   <build>
     <plugins>
       <plugin>
@@ -34,10 +34,6 @@
         <exclusion>
           <artifactId>byte-buddy-agent</artifactId>
           <groupId>net.bytebuddy</groupId>
-        </exclusion>
-        <exclusion>
-          <artifactId>objenesis</artifactId>
-          <groupId>org.objenesis</groupId>
         </exclusion>
       </exclusions>
     </dependency>
