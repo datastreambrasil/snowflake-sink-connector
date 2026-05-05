@@ -62,6 +62,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     @Override
     protected void put(Collection<SinkRecord> collection) {
+        LOGGER.info("PUT - Total number of records to be stored in the buffer: {}", collection.size());
         for (SinkRecord record : collection) {
 
             if (!validate(record)) {
