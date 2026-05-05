@@ -151,7 +151,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName,
                             String.join(",", columnsFromMetadata), stageName, destFileName);
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
-                    stmt.executeUpdate(copyInto);
+                    stmt.executeLargeUpdate(copyInto);
 
                     // Delete temp file after SnowFlake upload and COPY to ingest table and clear buffer.
                     this.discardData(tmpFilePathToInsert);
@@ -166,7 +166,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                                 String.join(",", columnsFinalTable.stream().map(c -> "ingest." + c).toList()),
                                 buildUpdateColumns());
                         LOGGER.debug("Merging statement to final table: {}", merge);
-                        stmt.executeUpdate(merge);
+                        stmt.executeLargeUpdate(merge);
                     }
 
                     //delete from final table

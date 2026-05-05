@@ -244,8 +244,8 @@ class CdcDbzSchemaProcessorTest {
 
         verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"),
                 assertArg(c -> assertNotNull(c, "CSV data stream should should not be null")), any(), eq(true));
-        verify(statementMock, times(1)).executeUpdate(matches("COPY.*"));
-        verify(statementMock, times(1)).executeUpdate(matches("MERGE.*"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("COPY.*"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
         verify(statementMock, times(1)).executeUpdate(matches("DELETE(.*)final.id = ingest.id"));
         assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
         assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_stage")));
