@@ -126,6 +126,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             return;
         }
 
+        var totalBuffer = buffer.size();
         var destFileName = UUID.randomUUID().toString();
         Path tmpFilePathToInsert = null;
         try {
@@ -152,8 +153,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
                     stmt.executeUpdate(copyInto);
 
-                    // Delete temp file after SnowFlake upload and COPY to ingest table.
-                    this.discardCsvData(tmpFilePathToInsert);
+                    // Delete temp file after SnowFlake upload and COPY to ingest table and clear buffer.
+                    this.discardData(tmpFilePathToInsert);
 
                     if (flushHasInsertedRecords || flushHasUpdatedRecords) {
                         //insert/update in final table
@@ -203,14 +204,15 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             throw new RuntimeException("Error while flushing", e);
         } finally {
             var endTime = System.currentTimeMillis();
-            LOGGER.debug("Flushed {} records in {} ms", buffer.size(), endTime - startTime);
+            LOGGER.debug("Flushed {} records in {} ms", totalBuffer, endTime - startTime);
             buffer.clear();
         }
     }
 
-    private void discardCsvData(Path csvToInsert) throws IOException {
-        LOGGER.debug("Discard CSV file data: {} of stage: {} after SnowFlake upload and COPY to ingest table.",
+    private void discardData(Path csvToInsert) throws IOException {
+        LOGGER.debug("Discard buffer and CSV file data: {} of stage: {} after SnowFlake upload and COPY to ingest table.",
                 csvToInsert.getFileName().toString(), stageName);
+        buffer.clear();
         Files.deleteIfExists(csvToInsert);
         LOGGER.debug("Discarded CSV file data: {} of stage: {}.", csvToInsert.getFileName().toString(), stageName);
     }
