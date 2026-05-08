@@ -252,7 +252,7 @@ public class SnowflakeSinkTask extends SinkTask {
                 try (var stmt = connection.createStatement()) {
                     String truncateTable = String.format("TRUNCATE TABLE %s", tableName);
                     LOGGER.debug("Truncating table: {}", truncateTable);
-                    stmt.executeUpdate(truncateTable);
+                    stmt.executeLargeUpdate(truncateTable);
                 } catch (Throwable e) {
                     LOGGER.error("Error while truncating table", e);
                     throw new RuntimeException("Error while truncating table", e);
@@ -279,7 +279,7 @@ public class SnowflakeSinkTask extends SinkTask {
             String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz %s", tableName, String.join(",", columnsFinalTable),
                     stageName, destFileName, removeStageAfterCopy ? "PURGE = TRUE" : "");
             LOGGER.debug("Copying statement: {}", copyInto);
-            stmt.executeUpdate(copyInto);
+            stmt.executeLargeUpdate(copyInto);
 
         } catch (Throwable e) {
             LOGGER.error("Error while flushing Snowflake connector", e);

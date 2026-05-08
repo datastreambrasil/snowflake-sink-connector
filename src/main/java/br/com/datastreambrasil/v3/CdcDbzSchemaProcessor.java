@@ -177,7 +177,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                                 tableName, String.join(",", pks), ingestTableName, blockID,
                                 buildPkWhereClause(pks));
                         LOGGER.debug("Deleting statement from final table: {}", deleteFromFinalTable);
-                        stmt.executeUpdate(deleteFromFinalTable);
+                        stmt.executeLargeUpdate(deleteFromFinalTable);
                     }
 
                     var endTimeStatement = System.currentTimeMillis();

@@ -28,7 +28,7 @@ public class CleanupJob implements Job {
 
         LOGGER.debug("Executing delete query: {}", deleteQuery);
         try (var stmt = connection.createStatement()) {
-            stmt.executeUpdate(deleteQuery);
+            stmt.executeLargeUpdate(deleteQuery);
         } catch (SQLException e) {
             LOGGER.error("Error while executing delete query", e);
         }

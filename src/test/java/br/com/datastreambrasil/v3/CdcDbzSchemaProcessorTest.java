@@ -246,7 +246,7 @@ class CdcDbzSchemaProcessorTest {
                 assertArg(c -> assertNotNull(c, "CSV data stream should should not be null")), any(), eq(true));
         verify(statementMock, times(1)).executeLargeUpdate(matches("COPY.*"));
         verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
-        verify(statementMock, times(1)).executeUpdate(matches("DELETE(.*)final.id = ingest.id"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
         assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
         assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_stage")));
         assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList().isEmpty());
@@ -281,7 +281,7 @@ class CdcDbzSchemaProcessorTest {
         var props = generateConfig().originals();
         props.put(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DURATION, "PT1S");
         processor.startCleanUpJob(new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, props));
-        verify(statement, timeout(4000).atLeast(3)).executeUpdate(matches("delete.*"));
+        verify(statement, timeout(4000).atLeast(3)).executeLargeUpdate(matches("delete.*"));
     }
 
     private Statement prepareToFlush(CdcDbzSchemaProcessor processor) throws SQLException {
