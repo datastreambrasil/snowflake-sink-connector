@@ -6,7 +6,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>br.com.datastreambrasil</groupId>
     <artifactId>snowflake-sink-connector</artifactId>
-    <version>3.8.0-rc.1</version>
+    <version>3.8.0-rc.2</version>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
@@ -72,8 +72,8 @@
 
         <dependency>
             <groupId>net.snowflake</groupId>
-            <artifactId>snowflake-jdbc</artifactId>
-            <version>3.21.0</version>
+                <artifactId>snowflake-jdbc</artifactId>
+            <version>3.28.0</version>
         </dependency>
         <dependency>
             <groupId>org.quartz-scheduler</groupId>
