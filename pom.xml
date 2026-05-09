@@ -6,7 +6,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>br.com.datastreambrasil</groupId>
     <artifactId>snowflake-sink-connector</artifactId>
-    <version>3.8.0-rc.2</version>
+    <version>3.8.0-rc.3</version>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
@@ -30,7 +30,7 @@
         <dependency>
             <groupId>org.apache.kafka</groupId>
             <artifactId>connect-api</artifactId>
-            <version>4.1.0</version>
+            <version>4.1.2</version>
         </dependency>
 
         <!-- logs -->
