@@ -75,7 +75,14 @@ public abstract class AbstractProcessor {
     protected void start(AbstractConfig config) {
         configParameters(config);
         setupSnowflakeConnection(config);
-        configMetadata();
+
+        if (config.getList(SnowflakeSinkConnector.INGEST_TABLE_FIELD_NAMES).isEmpty() ||
+                config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES).isEmpty()) {
+            configMetadata();
+        } else {
+            configMetadataV2(config);
+        }
+
         extraConfigsOnStart(config);
     }
 
@@ -87,6 +94,11 @@ public abstract class AbstractProcessor {
             LOGGER.error("Error while get metadata columns from snowflake", e);
             throw new RuntimeException("Error while get metadata columns from snowflake", e);
         }
+    }
+
+    protected void configMetadataV2(AbstractConfig config) {
+        columnsFinalTable = config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES);
+        columnsIngestTable = config.getList(SnowflakeSinkConnector.INGEST_TABLE_FIELD_NAMES);
     }
 
     protected void configParameters(AbstractConfig config) {
