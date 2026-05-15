@@ -93,7 +93,11 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     LocalDateTime.now(ZoneOffset.UTC)
             );
 
-            LOGGER.trace("Added record to buffer: {} with operation {}", recordToSnowflake, valueOP);
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.trace("Added record to buffer: {} with operation {}", recordToSnowflake, valueOP);
+            } else {
+                LOGGER.trace("Added record to buffer with offset: {} and operation {}", recordToSnowflake.offset(), valueOP);
+            }
             buffer.put(convertPKToStringKey(record), recordToSnowflake);
         }
     }

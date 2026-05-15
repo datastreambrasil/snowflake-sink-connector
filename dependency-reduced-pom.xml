@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>br.com.datastreambrasil</groupId>
   <artifactId>snowflake-sink-connector</artifactId>
-  <version>3.8.0-rc.4</version>
+  <version>3.8.0-rc.5</version>
   <build>
     <plugins>
       <plugin>
