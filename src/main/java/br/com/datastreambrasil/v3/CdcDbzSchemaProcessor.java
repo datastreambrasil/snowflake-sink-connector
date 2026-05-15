@@ -96,7 +96,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.trace("Added record to buffer: {} with operation {}", recordToSnowflake, valueOP);
             } else {
-                LOGGER.trace("Added record to buffer with offset: {} and operation {}", recordToSnowflake.offset(), valueOP);
+                LOGGER.trace("Added record to buffer from topic: {} and partition: {}, with offset: {} and operation {}",
+                        recordToSnowflake.topic(), recordToSnowflake.partition(), recordToSnowflake.offset(), valueOP);
             }
             buffer.put(convertPKToStringKey(record), recordToSnowflake);
         }
