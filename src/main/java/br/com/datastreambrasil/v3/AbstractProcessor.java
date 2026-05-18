@@ -122,6 +122,15 @@ public abstract class AbstractProcessor {
             var properties = new Properties();
             properties.put("user", config.getString(SnowflakeSinkConnector.CFG_USER));
             properties.put("password", config.getString(SnowflakeSinkConnector.CFG_PASSWORD));
+
+            // Forca o driver a usar o contexto da sessao para metadata
+            // evitando SHOW COLUMNS / SHOW OBJECTS implicitos
+            properties.put("CLIENT_METADATA_USE_SESSION_DATABASE", "true");
+            properties.put("CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX", "true");
+
+            // Desabilita o cache de metadata que tambem dispara SHOW COLUMNS
+            properties.put("jdbc.disableParallelFetch", "true");
+
             connection = DriverManager.getConnection(config.getString(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);   // using the provided configuration.
         } catch (SQLException e) {
