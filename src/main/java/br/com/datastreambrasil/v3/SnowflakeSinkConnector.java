@@ -33,7 +33,6 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CONSUMER_OVERRIDE_MAX_POLL_INTERVAL_MS = "consumer.override.max.poll.interval.ms";
     protected static final String TMP_DATA_FOLDER = "tmp_data_folder";
     protected static final String BUFFER_INITIAL_CAPACITY = "buffer_initial_capacity";
-    protected static final String INGEST_TABLE_FIELD_NAMES = "ingest_table_field_names";
     protected static final String FINAL_TABLE_FIELD_NAMES = "final_table_field_names";
 
     /*
@@ -105,9 +104,6 @@ public class SnowflakeSinkConnector extends SinkConnector {
         .define(BUFFER_INITIAL_CAPACITY, ConfigDef.Type.INT, 1000000,
                 ConfigDef.Importance.HIGH,
                 "The initial buffer capacity.")
-        .define(INGEST_TABLE_FIELD_NAMES, ConfigDef.Type.LIST, List.of(),
-                ConfigDef.Importance.HIGH,
-                "The names of the fields in the ingest table.")
         .define(FINAL_TABLE_FIELD_NAMES, ConfigDef.Type.LIST, List.of(),
                 ConfigDef.Importance.HIGH,
                 "The names of the fields in the final table.");

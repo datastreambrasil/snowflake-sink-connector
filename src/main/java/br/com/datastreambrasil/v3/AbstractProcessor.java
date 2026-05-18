@@ -54,6 +54,7 @@ public abstract class AbstractProcessor {
     protected static final String REGEX_REPLACEMENT_QUOTE_VALUE = "\"\"";
     protected static final String LINE_SEPARATOR_COMMA = ",";
     protected static final int SB_CSV_INITIAL_SIZE = 1000;
+    protected static final List<String> INGEST_ADDITIONAL_FIELDS = List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
 
     protected enum debeziumOperation {
         d,
@@ -76,8 +77,7 @@ public abstract class AbstractProcessor {
         configParameters(config);
         setupSnowflakeConnection(config);
 
-        if (config.getList(SnowflakeSinkConnector.INGEST_TABLE_FIELD_NAMES).isEmpty() ||
-                config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES).isEmpty()) {
+        if (config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES).isEmpty()) {
             configMetadata();
         } else {
             configMetadataV2(config);
@@ -98,7 +98,9 @@ public abstract class AbstractProcessor {
 
     protected void configMetadataV2(AbstractConfig config) {
         columnsFinalTable = config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES);
-        columnsIngestTable = config.getList(SnowflakeSinkConnector.INGEST_TABLE_FIELD_NAMES);
+        columnsIngestTable = new ArrayList<>();
+        columnsIngestTable.addAll(config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES));
+        columnsIngestTable.addAll(INGEST_ADDITIONAL_FIELDS);
     }
 
     protected void configParameters(AbstractConfig config) {

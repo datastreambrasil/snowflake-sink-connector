@@ -343,8 +343,7 @@ class CdcDbzSchemaProcessorTest {
                 "timestamp_fields_convert", "timestamp",
                 "date_fields_convert", "date",
                 "time_fields_convert", "time",
-                "final_table_field_names", List.of("id", "name", "timestamp", "time", "date", "desc"),
-                "ingest_table_field_names", List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid")
+                "final_table_field_names", List.of("id", "name", "timestamp", "time", "date", "desc")
         ));
     }
 
