@@ -83,11 +83,15 @@ public abstract class AbstractProcessor {
             configMetadataV2(config);
         }
 
+        LOGGER.info("Processando parametros novos... FINAL_TABLE_FIELD_NAMES: {}, INGEST_TABLE_FIELD_NAMES: {}",
+                config.getList(SnowflakeSinkConnector.INGEST_TABLE_FIELD_NAMES), config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES));
+
         extraConfigsOnStart(config);
     }
 
     protected void configMetadata() {
         try {
+            LOGGER.info("Processando configMetadata");
             columnsFinalTable = getColumnsFromMetadata(tableName);
             columnsIngestTable = getColumnsFromMetadata(ingestTableName);
         } catch (SQLException e) {
@@ -97,6 +101,7 @@ public abstract class AbstractProcessor {
     }
 
     protected void configMetadataV2(AbstractConfig config) {
+        LOGGER.info("Processando configMetadataV2");
         columnsFinalTable = config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES);
         columnsIngestTable = config.getList(SnowflakeSinkConnector.INGEST_TABLE_FIELD_NAMES);
     }
