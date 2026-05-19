@@ -54,6 +54,7 @@ public abstract class AbstractProcessor {
     protected static final String REGEX_REPLACEMENT_QUOTE_VALUE = "\"\"";
     protected static final String LINE_SEPARATOR_COMMA = ",";
     protected static final int SB_CSV_INITIAL_SIZE = 1000;
+    protected static final List<String> INGEST_ADDITIONAL_FIELDS = List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
 
     protected enum debeziumOperation {
         d,
@@ -75,7 +76,13 @@ public abstract class AbstractProcessor {
     protected void start(AbstractConfig config) {
         configParameters(config);
         setupSnowflakeConnection(config);
-        configMetadata();
+
+        if (config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES).isEmpty()) {
+            configMetadata();
+        } else {
+            configMetadataV2(config);
+        }
+
         extraConfigsOnStart(config);
     }
 
@@ -87,6 +94,13 @@ public abstract class AbstractProcessor {
             LOGGER.error("Error while get metadata columns from snowflake", e);
             throw new RuntimeException("Error while get metadata columns from snowflake", e);
         }
+    }
+
+    protected void configMetadataV2(AbstractConfig config) {
+        columnsFinalTable = config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES);
+        columnsIngestTable = new ArrayList<>();
+        columnsIngestTable.addAll(config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES));
+        columnsIngestTable.addAll(INGEST_ADDITIONAL_FIELDS);
     }
 
     protected void configParameters(AbstractConfig config) {
@@ -110,6 +124,15 @@ public abstract class AbstractProcessor {
             var properties = new Properties();
             properties.put("user", config.getString(SnowflakeSinkConnector.CFG_USER));
             properties.put("password", config.getString(SnowflakeSinkConnector.CFG_PASSWORD));
+
+            // Forca o driver a usar o contexto da sessao para metadata
+            // evitando SHOW COLUMNS / SHOW OBJECTS implicitos
+            properties.put("CLIENT_METADATA_USE_SESSION_DATABASE", "true");
+            properties.put("CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX", "true");
+
+            // Desabilita o cache de metadata que tambem dispara SHOW COLUMNS
+            properties.put("jdbc.disableParallelFetch", "true");
+
             connection = DriverManager.getConnection(config.getString(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);   // using the provided configuration.
         } catch (SQLException e) {
