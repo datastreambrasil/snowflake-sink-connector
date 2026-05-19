@@ -1,5 +1,7 @@
 package br.com.datastreambrasil.v3;
 
+import br.com.datastreambrasil.v3.compress.CompressedMap;
+import br.com.datastreambrasil.v3.compress.KryoFactory;
 import br.com.datastreambrasil.v3.model.SnowflakeRecord;
 import net.snowflake.client.jdbc.SnowflakeConnection;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -14,7 +16,6 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -35,9 +36,8 @@ public abstract class AbstractProcessor {
     protected List<String> timestampFieldsConvert = new ArrayList<>();
     protected List<String> dateFieldsConvert = new ArrayList<>();
     protected List<String> timeFieldsConvert = new ArrayList<>();
-    protected final Map<String, SnowflakeRecord> buffer = new LinkedHashMap<>();
-    protected boolean hashingSupport;
-
+    protected CompressedMap<SnowflakeRecord> buffer;
+    protected String tmpDataFolder;
 
     protected static final String AFTER = "after";
     protected static final String BEFORE = "before";
@@ -48,8 +48,13 @@ public abstract class AbstractProcessor {
     protected static final String IHOP = "ih_op";
     protected static final String IHDATETIME = "ih_datetime";
     protected static final String IHBLOCKID = "ih_blockid";
-    protected static final String IH_PREVIOUS_HASH = "ih_previous_hash";
-    protected static final String IH_CURRENT_HASH = "ih_current_hash";
+
+    protected static final String DOUBLE_QUOTE = "\"";
+    protected static final String BREAK_LINE = "\n";
+    protected static final String REGEX_REPLACEMENT_QUOTE_VALUE = "\"\"";
+    protected static final String LINE_SEPARATOR_COMMA = ",";
+    protected static final int SB_CSV_INITIAL_SIZE = 1000;
+    protected static final List<String> INGEST_ADDITIONAL_FIELDS = List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
 
     protected enum debeziumOperation {
         d,
@@ -71,7 +76,13 @@ public abstract class AbstractProcessor {
     protected void start(AbstractConfig config) {
         configParameters(config);
         setupSnowflakeConnection(config);
-        configMetadata();
+
+        if (config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES).isEmpty()) {
+            configMetadata();
+        } else {
+            configMetadataV2(config);
+        }
+
         extraConfigsOnStart(config);
     }
 
@@ -85,18 +96,27 @@ public abstract class AbstractProcessor {
         }
     }
 
+    protected void configMetadataV2(AbstractConfig config) {
+        columnsFinalTable = config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES);
+        columnsIngestTable = new ArrayList<>();
+        columnsIngestTable.addAll(config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES));
+        columnsIngestTable.addAll(INGEST_ADDITIONAL_FIELDS);
+    }
+
     protected void configParameters(AbstractConfig config) {
         stageName = config.getString(SnowflakeSinkConnector.CFG_STAGE_NAME);
         tableName = config.getString(SnowflakeSinkConnector.CFG_TABLE_NAME);
         ingestTableName = tableName + INGEST_SUFFIX;
         schemaName = config.getString(SnowflakeSinkConnector.CFG_SCHEMA_NAME);
-        hashingSupport = config.getBoolean(SnowflakeSinkConnector.CFG_HASHING_SUPPORT);
 
         timestampFieldsConvert.addAll(config.getList(SnowflakeSinkConnector.CFG_TIMESTAMP_FIELDS_CONVERT));
         dateFieldsConvert.addAll(config.getList(SnowflakeSinkConnector.CFG_DATE_FIELDS_CONVERT));
         timeFieldsConvert.addAll(config.getList(SnowflakeSinkConnector.CFG_TIME_FIELDS_CONVERT));
         ignoreColumns.addAll(config.getList(SnowflakeSinkConnector.CFG_IGNORE_COLUMNS));
 
+        tmpDataFolder = config.getString(SnowflakeSinkConnector.TMP_DATA_FOLDER);
+
+        buffer = new CompressedMap<>(new KryoFactory(), config.getInt(SnowflakeSinkConnector.BUFFER_INITIAL_CAPACITY));
     }
 
     protected void setupSnowflakeConnection(AbstractConfig config) {
@@ -104,6 +124,15 @@ public abstract class AbstractProcessor {
             var properties = new Properties();
             properties.put("user", config.getString(SnowflakeSinkConnector.CFG_USER));
             properties.put("password", config.getString(SnowflakeSinkConnector.CFG_PASSWORD));
+
+            // Forca o driver a usar o contexto da sessao para metadata
+            // evitando SHOW COLUMNS / SHOW OBJECTS implicitos
+            properties.put("CLIENT_METADATA_USE_SESSION_DATABASE", "true");
+            properties.put("CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX", "true");
+
+            // Desabilita o cache de metadata que tambem dispara SHOW COLUMNS
+            properties.put("jdbc.disableParallelFetch", "true");
+
             connection = DriverManager.getConnection(config.getString(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);   // using the provided configuration.
         } catch (SQLException e) {
@@ -130,8 +159,7 @@ public abstract class AbstractProcessor {
         //remove duplicated
         var columnsNoDuplicate = columnsFromTable.stream().distinct().toList();
 
-        LOGGER.debug("Columns mapped from target table: {}", String.join(",", columnsNoDuplicate));
-
+        LOGGER.debug("Columns mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsNoDuplicate));
 
         return columnsNoDuplicate;
     }

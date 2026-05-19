@@ -1,7 +1,7 @@
 package br.com.datastreambrasil.v3;
 
 import br.com.datastreambrasil.v3.exception.InvalidStructException;
-import br.com.datastreambrasil.v3.model.SinkHashRecord;
+import br.com.datastreambrasil.v3.model.FieldRecord;
 import br.com.datastreambrasil.v3.model.SnowflakeRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -17,9 +17,10 @@ import org.quartz.SimpleScheduleBuilder;
 import org.quartz.TriggerBuilder;
 import org.quartz.impl.StdSchedulerFactory;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -32,10 +33,10 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.TimeZone;
 import java.util.UUID;
-import java.util.zip.CRC32;
 
 /**
  * CdcDbzSchemaProcessor receives SinkRecords using Struct with Schema in CDC Debezium format.
@@ -48,7 +49,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     private boolean flushHasDeletedRecords;
     private boolean flushHasInsertedRecords;
     private boolean flushHasUpdatedRecords;
-    private final CRC32 crc32 = new CRC32();
 
     @Override
     protected void extraConfigsOnStart(AbstractConfig config) {
@@ -62,6 +62,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     @Override
     protected void put(Collection<SinkRecord> collection) {
+        LOGGER.info("PUT - Total number of records to be stored in the buffer: {}", collection.size());
         for (SinkRecord record : collection) {
 
             if (!validate(record)) {
@@ -83,22 +84,40 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 throw new InvalidStructException("Value for field '" + OP + "' is null");
             }
 
-
             var recordToSnowflake = new SnowflakeRecord(
-                    debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER),
+                    this.prepareEvent(debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER)),
                     record.topic(),
                     record.kafkaPartition(),
                     record.kafkaOffset(),
                     valueOP,
-                    LocalDateTime.now(ZoneOffset.UTC),
-                    calculateHash(valueOP, valueRecord),
-                    record
+                    LocalDateTime.now(ZoneOffset.UTC)
             );
 
             LOGGER.trace("Added record to buffer: {} with operation {}", recordToSnowflake, valueOP);
-            buffer.put(UUID.randomUUID().toString(), recordToSnowflake);
-            cleanUpOldHashRecords(recordToSnowflake);
+            buffer.put(convertPKToStringKey(record), recordToSnowflake);
         }
+    }
+
+    private List<FieldRecord> prepareEvent(Struct struct) {
+        var fields = new ArrayList<FieldRecord>(struct.schema().fields().size());
+        struct.schema().fields().forEach(fs -> fields.add(new FieldRecord(fs.name(), struct.get(fs.name()))));
+        return fields;
+    }
+
+    private boolean validate(SinkRecord record) {
+        if (record.keySchema() == null || record.valueSchema() == null ||
+                !(record.key() instanceof Struct) || !(record.value() instanceof Struct)) {
+            LOGGER.error("Key and value must be Structs with schemas. Key: {}, Value: {}", record.key(), record.value());
+            return false;
+        }
+
+        if (record.topic() == null || record.kafkaPartition() == null) {
+            LOGGER.error("Null values for topic or kafkaPartition. Topic {}, KafkaPartition {}", record.topic(),
+                    record.kafkaPartition());
+            return false;
+        }
+
+        return true;
     }
 
     @Override
@@ -108,7 +127,9 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             return;
         }
 
+        var totalBuffer = buffer.size();
         var destFileName = UUID.randomUUID().toString();
+        Path tmpFilePathToInsert = null;
         try {
             LOGGER.debug("Preparing to send {} records from buffer. To stage {} and table {}", buffer.size(), stageName,
                     tableName);
@@ -116,12 +137,11 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             var columnsFromMetadata = columnsIngestTable;
             var blockID = UUID.randomUUID().toString();
             var startTimeMain = System.currentTimeMillis();
-            try (var csvToInsert = prepareOrderedColumnsBasedOnTargetTable(blockID, columnsFromMetadata);
-                 var inputStream = new ByteArrayInputStream(csvToInsert.toByteArray())) {
+            tmpFilePathToInsert = prepareOrderedColumnsBasedOnTargetTable(blockID, columnsFromMetadata);
 
+            try (var inputStream = Files.newInputStream(tmpFilePathToInsert)) {
                 var startTimeUpload = System.currentTimeMillis();
-                snowflakeConnection.uploadStream(stageName, "/", inputStream,
-                        destFileName, true);
+                snowflakeConnection.uploadStream(stageName, "/", inputStream, destFileName, true);
                 var endTimeUpload = System.currentTimeMillis();
                 LOGGER.debug("Uploaded {} records in {} ms", buffer.size(), endTimeUpload - startTimeUpload);
 
@@ -129,38 +149,35 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 try (var stmt = connection.createStatement()) {
 
                     //copy everything to ingest
-                    String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName, String.join(",", columnsFromMetadata),
-                            stageName, destFileName);
+                    String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName,
+                            String.join(",", columnsFromMetadata), stageName, destFileName);
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
-                    stmt.executeUpdate(copyInto);
+                    stmt.executeLargeUpdate(copyInto);
 
-                    if (flushHasInsertedRecords) {
-                        String insert = String.format("INSERT INTO %s (%s) SELECT * EXCLUDE (%s) FROM %s WHERE ih_blockid = '%s' and ih_op in ('c', 'r')",
-                                tableName, String.join(",", columnsFinalTable), buildExcludeColumns(), ingestTableName, blockID);
-                        LOGGER.debug("Inserting into ingest table: {}", insert);
-                        stmt.executeUpdate(insert);
-                    }
+                    // Delete temp file after SnowFlake upload and COPY to ingest table and clear buffer.
+                    this.discardData(tmpFilePathToInsert);
 
-
-                    if (flushHasUpdatedRecords) {
-                        //update in final table
-                        String update = String.format(
-                                "UPDATE %s AS final SET %s FROM (SELECT * FROM %s WHERE ih_blockid = '%s' and ih_op = 'u') AS ingest WHERE %s",
-                                tableName, buildUpdateColumns(), ingestTableName, blockID,
-                                buildPkWhereClause(pks));
-                        LOGGER.debug("Updating statement to final table: {}", update);
-                        stmt.executeUpdate(update);
+                    if (flushHasInsertedRecords || flushHasUpdatedRecords) {
+                        //insert/update in final table
+                        String merge = String.format("MERGE INTO %s AS final USING (SELECT * EXCLUDE (%s) FROM %s WHERE ih_blockid = '%s' and ih_op in ('c', 'r', 'u')) AS ingest ON %s " +
+                                        "WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s) " +
+                                        "WHEN MATCHED THEN UPDATE SET %s",
+                                tableName, buildExcludeColumns(), ingestTableName, blockID,
+                                buildPkWhereClause(pks), String.join(",", columnsFinalTable),
+                                String.join(",", columnsFinalTable.stream().map(c -> "ingest." + c).toList()),
+                                buildUpdateColumns());
+                        LOGGER.debug("Merging statement to final table: {}", merge);
+                        stmt.executeLargeUpdate(merge);
                     }
 
                     //delete from final table
                     if (flushHasDeletedRecords) {
                         String deleteFromFinalTable = String.format(
                                 "DELETE FROM %s as final USING (SELECT %s FROM %s WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest WHERE %s",
-                                tableName, hashingSupport ? String.join(",", IH_CURRENT_HASH, IH_PREVIOUS_HASH) : String.join(",", pks),
-                                ingestTableName, blockID,
+                                tableName, String.join(",", pks), ingestTableName, blockID,
                                 buildPkWhereClause(pks));
                         LOGGER.debug("Deleting statement from final table: {}", deleteFromFinalTable);
-                        stmt.executeUpdate(deleteFromFinalTable);
+                        stmt.executeLargeUpdate(deleteFromFinalTable);
                     }
 
                     var endTimeStatement = System.currentTimeMillis();
@@ -175,12 +192,30 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         } catch (Throwable e) {
             LOGGER.error("Error while flushing Snowflake connector", e);
+
+            if (tmpFilePathToInsert != null) {
+                try {
+                    Files.deleteIfExists(tmpFilePathToInsert);
+                } catch (IOException ex) {
+                    LOGGER.warn("Temp file: {} not found after flushing Snowflake connector",
+                            tmpFilePathToInsert.getFileName().toString(), ex);
+                }
+            }
+
             throw new RuntimeException("Error while flushing", e);
         } finally {
             var endTime = System.currentTimeMillis();
-            LOGGER.debug("Flushed {} records in {} ms", buffer.size(), endTime - startTime);
+            LOGGER.debug("Flushed {} records in {} ms", totalBuffer, endTime - startTime);
             buffer.clear();
         }
+    }
+
+    private void discardData(Path csvToInsert) throws IOException {
+        LOGGER.debug("Discard buffer and CSV file data: {} of stage: {} after SnowFlake upload and COPY to ingest table.",
+                csvToInsert.getFileName().toString(), stageName);
+        buffer.clear();
+        Files.deleteIfExists(csvToInsert);
+        LOGGER.debug("Discarded CSV file data: {} of stage: {}.", csvToInsert.getFileName().toString(), stageName);
     }
 
     @Override
@@ -212,7 +247,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         jobData.put(CleanupJob.INGEST_TABLE_NAME, ingestTableName);
 
         var props = new Properties();
-        props.setProperty(StdSchedulerFactory.PROP_SCHED_INSTANCE_NAME, "cleanup_" + UUID.randomUUID());
+        props.setProperty(StdSchedulerFactory.PROP_SCHED_INSTANCE_NAME, String.format("cleanup_%s", UUID.randomUUID()));
         props.setProperty("org.quartz.threadPool.threadCount", "1");
 
         var schedulerFactory = new StdSchedulerFactory(props);
@@ -228,12 +263,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     }
 
     private List<String> extractPK(SinkRecord record) {
-
-        if (hashingSupport) {
-            return new ArrayList<>(); //empty because we won't use normal PK in that case
-        }
-
-        if (pks.isEmpty() && record.keySchema() != null && record.keySchema().fields() != null) {
+        if (pks.isEmpty()) {
             for (Field field : record.keySchema().fields()) {
                 pks.add(field.name());
             }
@@ -242,14 +272,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         return pks;
     }
 
-
-    private String convertPKToStringKey(SnowflakeRecord record) {
-
-        if (hashingSupport) {
-            return UUID.randomUUID().toString();
-        }
-
-        var keyStruct = (Struct) record.originalRecord().key();
+    private String convertPKToStringKey(SinkRecord record) {
+        var keyStruct = (Struct) record.key();
         var pkValues = new ArrayList<String>();
         for (String pk : pks) {
             var value = keyStruct.get(pk);
@@ -276,21 +300,14 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     }
 
     private String buildPkWhereClause(List<String> pks) {
-        if (hashingSupport) {
-            return String.format("%s.%s = %s.%s", "final", IH_CURRENT_HASH, "ingest", IH_PREVIOUS_HASH);
-        } else {
-            return pks.stream()
-                    .map(col -> String.format("%s.%s = %s.%s", "final", col, "ingest", col))
-                    .reduce((a, b) -> a + " and " + b).orElseThrow();
-        }
-
+        return pks.stream()
+                .map(col -> String.format("final.%s = ingest.%s", col, col))
+                .reduce((a, b) -> String.format("%s and %s", a, b)).orElseThrow();
     }
 
-    protected ByteArrayOutputStream prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable) throws Throwable {
-
+    protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable) throws Throwable {
         var startTime = System.currentTimeMillis();
-        var csvInMemory = new ByteArrayOutputStream();
-        var stringBuilder = new StringBuilder();
+        var stringBuilder = new StringBuilder(buffer.size() * SB_CSV_INITIAL_SIZE);
 
         flushHasDeletedRecords = false;
         flushHasUpdatedRecords = false;
@@ -298,8 +315,9 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         boolean loggedDebugForFirstLine = false;
         for (var recordInBuffer : buffer.values()) {
+            var recordData = buffer.deserializeValue(recordInBuffer);
             var count = 0;
-            var op = recordInBuffer.op();
+            var op = recordData.op();
 
             if (debeziumOperation.d.toString().equalsIgnoreCase(op)) {
                 flushHasDeletedRecords = true;
@@ -314,54 +332,35 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             }
 
             for (String columnFromSnowflakeTable : columnsFromTable) {
-
                 if (columnFromSnowflakeTable.equalsIgnoreCase(IHBLOCKID)) {
-                    var strBuffer = "\"" + blockID + "\"";
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(blockID)
+                            .append(DOUBLE_QUOTE);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOP)) {
-                    var strBuffer = "\"" + recordInBuffer.op() + "\"";
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(recordData.op())
+                            .append(DOUBLE_QUOTE);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHTOPIC)) {
-                    var strBuffer = "\"" + recordInBuffer.topic() + "\"";
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(recordData.topic())
+                            .append(DOUBLE_QUOTE);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHDATETIME)) {
-                    var strBuffer = "\"" + recordInBuffer.timestamp() + "\"";
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(recordData.timestamp())
+                            .append(DOUBLE_QUOTE);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHPARTITION)) {
-                    var strBuffer = "\"" + recordInBuffer.partition() + "\"";
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(recordData.partition())
+                            .append(DOUBLE_QUOTE);
                 } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOFFSET)) {
-                    var strBuffer = "\"" + recordInBuffer.offset() + "\"";
-                    stringBuilder.append(strBuffer);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IH_CURRENT_HASH)) {
-                    String strBuffer;
-                    if (recordInBuffer.hash().newHash() == null) {
-                        strBuffer = "";
-                    } else {
-                        strBuffer = "\"" + recordInBuffer.hash().newHash() + "\"";
-                    }
-                    stringBuilder.append(strBuffer);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IH_PREVIOUS_HASH)) {
-                    String strBuffer;
-                    if (recordInBuffer.hash().firstSeenHash() == null) {
-                        strBuffer = "";
-                    } else {
-                        strBuffer = "\"" + recordInBuffer.hash().firstSeenHash() + "\"";
-                    }
-                    stringBuilder.append(strBuffer);
+                    stringBuilder.append(DOUBLE_QUOTE)
+                            .append(recordData.offset())
+                            .append(DOUBLE_QUOTE);
                 } else {
-                    var fieldCaseInsensitive = recordInBuffer.event().schema().fields().stream().filter(field ->
+                    Optional<FieldRecord> fieldRecord = recordData.event().stream().filter(field ->
                             field.name().equalsIgnoreCase(columnFromSnowflakeTable)).findFirst();
-                    String searchColumn;
-                    if (fieldCaseInsensitive.isEmpty()) {
-                        LOGGER.warn("Column {} not found on record schema, fallback to snowflake original column name", columnFromSnowflakeTable);
-                        searchColumn = columnFromSnowflakeTable;
-                    } else {
-                        searchColumn = fieldCaseInsensitive.get().name();
-                    }
-
-                    Object valueFromRecord = recordInBuffer.event().get(searchColumn);
-                    if (valueFromRecord != null) {
+                    if (fieldRecord.isPresent() && fieldRecord.get().data() != null) {
+                        Object valueFromRecord = fieldRecord.get().data();
                         if (containsAny(columnFromSnowflakeTable, timestampFieldsConvert)) {
                             var valueFromRecordAsLong = (long) valueFromRecord;
                             valueFromRecord = LocalDateTime.ofInstant(Instant.ofEpochMilli(valueFromRecordAsLong),
@@ -376,117 +375,49 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                             valueFromRecord = LocalTime.ofNanoOfDay(valueFromRecordAsLong).toString();
                         }
 
-                        valueFromRecord = valueFromRecord.toString().replaceAll("\"", "\"\"");
-                        var strBuffer = "\"" + valueFromRecord + "\"";
-                        stringBuilder.append(strBuffer);
-
+                        valueFromRecord = valueFromRecord.toString().replaceAll(DOUBLE_QUOTE, REGEX_REPLACEMENT_QUOTE_VALUE);
+                        stringBuilder.append(DOUBLE_QUOTE).append(valueFromRecord).append(DOUBLE_QUOTE);
                     } else {
                         LOGGER.warn("Column {} not found on buffer, inserted empty value", columnFromSnowflakeTable);
                     }
                 }
 
                 if (count < columnsFromTable.size() - 1) {
-                    stringBuilder.append(",");
+                    stringBuilder.append(LINE_SEPARATOR_COMMA);
                 }
 
                 count++;
             }
 
-
-            stringBuilder.append("\n");
+            stringBuilder.append(BREAK_LINE);
             if (!loggedDebugForFirstLine && LOGGER.isDebugEnabled()) {
                 LOGGER.debug("First lines of csv: {}", stringBuilder);
                 loggedDebugForFirstLine = true;
             }
         }
 
-        if (!stringBuilder.isEmpty()) {
-            csvInMemory.write(stringBuilder.toString().getBytes(StandardCharsets.UTF_8));
-        }
-        var endTime = System.currentTimeMillis();
-        LOGGER.debug("Prepared csv in memory in {} ms", endTime - startTime);
-        return csvInMemory;
+        stringBuilder.trimToSize();
+
+        return this.generateTempFile(stringBuilder, startTime);
     }
 
-    protected SinkHashRecord calculateHash(String op, Struct record) {
-        if (!hashingSupport) {
-            return null;
-        }
+    private Path generateTempFile(StringBuilder stringBuilder, long startTime) throws IOException {
+        Files.createDirectories(Path.of(String.format("%s/%s", tmpDataFolder, stageName)));
 
-        SinkHashRecord hashRecord = null;
+        var tmpPath = Path.of(String.format("%s/%s/%s.csv", tmpDataFolder, stageName, UUID.randomUUID()));
+        Files.deleteIfExists(tmpPath);
 
-        //creating the record, so we don't have the before struct
-        if (debeziumOperation.c.toString().equalsIgnoreCase(op) || debeziumOperation.r.toString().equalsIgnoreCase(op)) {
-            var hash = getHash(record.getStruct(AFTER));
-            hashRecord = new SinkHashRecord(getFirstSeenHash(hash), null, hash);
-        }
+        var resultPath = Files.writeString(tmpPath, stringBuilder.toString(), StandardOpenOption.CREATE);
 
-        // we do have the before struct but don't have after struct
-        if (debeziumOperation.d.toString().equalsIgnoreCase(op)) {
-            var previousHash = getHash(record.getStruct(BEFORE));
-            hashRecord = new SinkHashRecord(getFirstSeenHash(previousHash), previousHash, null);
-        }
+        LOGGER.debug("Prepared csv in file in {} ms", System.currentTimeMillis() - startTime);
 
-        // we do have the before struct and after struct
-        if (debeziumOperation.u.toString().equalsIgnoreCase(op)) {
-            var previousHash = getHash(record.getStruct(BEFORE));
-            hashRecord = new SinkHashRecord(getFirstSeenHash(previousHash), previousHash, getHash(record.getStruct(AFTER)));
-        }
+        stringBuilder.delete(0, stringBuilder.length());
 
-        if (hashRecord == null) {
-            throw new InvalidStructException("Invalid operation type: " + op);
-        }
-
-        return hashRecord;
+        return resultPath;
     }
-
-    private String getFirstSeenHash(String searchHash) {
-        var foundRecord = buffer.get(searchHash);
-        return foundRecord != null && foundRecord.hash() != null && foundRecord.hash().firstSeenHash() != null ?
-                foundRecord.hash().firstSeenHash() : searchHash;
-    }
-
-    private String getHash(Object o) {
-        crc32.reset();
-        crc32.update(o.toString().getBytes());
-        return Long.toHexString(crc32.getValue());
-    }
-
 
     private boolean containsAny(String checkValue, List<String> values) {
-        for (String s : values) {
-            if (s.trim().equalsIgnoreCase(checkValue.trim())) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private boolean validate(SinkRecord record) {
-
-        if (!hashingSupport && (record.keySchema() == null || !(record.key() instanceof Struct))) {
-            LOGGER.error("Key must be Struct with schema. Key: {}", record.key());
-            return false;
-        }
-
-        if (record.valueSchema() == null || !(record.value() instanceof Struct)) {
-            LOGGER.error("Value must be Struct with schemas. Value: {}", record.value());
-            return false;
-        }
-
-        if (record.topic() == null || record.kafkaPartition() == null) {
-            LOGGER.error("Null values for topic or kafkaPartition. Topic {}, KafkaPartition {}", record.topic(),
-                    record.kafkaPartition());
-            return false;
-        }
-
-        return true;
-    }
-
-    private void cleanUpOldHashRecords(SnowflakeRecord record) {
-        if (hashingSupport && debeziumOperation.u.toString().equalsIgnoreCase(record.op())) {
-            buffer.remove(record.hash().previousHash());
-        }
+        return Optional.ofNullable(values).orElse(List.of()).stream()
+                .anyMatch(s -> s.trim().equalsIgnoreCase(checkValue.trim()));
     }
 }

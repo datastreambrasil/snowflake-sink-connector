@@ -1,7 +1,10 @@
 package br.com.datastreambrasil.v3;
 
+import br.com.datastreambrasil.v3.compress.CompressedMap;
+import br.com.datastreambrasil.v3.compress.KryoFactory;
 import br.com.datastreambrasil.v3.exception.InvalidStructException;
 import net.snowflake.client.jdbc.SnowflakeConnection;
+import net.snowflake.client.jdbc.internal.apache.commons.io.IOUtils;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
@@ -11,6 +14,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.quartz.SchedulerException;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
@@ -21,7 +27,6 @@ import java.time.ZoneOffset;
 import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -32,9 +37,8 @@ import static br.com.datastreambrasil.v3.AbstractProcessor.IHOFFSET;
 import static br.com.datastreambrasil.v3.AbstractProcessor.IHOP;
 import static br.com.datastreambrasil.v3.AbstractProcessor.IHPARTITION;
 import static br.com.datastreambrasil.v3.AbstractProcessor.IHTOPIC;
-import static br.com.datastreambrasil.v3.AbstractProcessor.IH_CURRENT_HASH;
-import static br.com.datastreambrasil.v3.AbstractProcessor.IH_PREVIOUS_HASH;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -75,35 +79,44 @@ class CdcDbzSchemaProcessorTest {
     @Test
     void testPutSuccess() {
         var processor = new CdcDbzSchemaProcessor();
+        processor.buffer = new CompressedMap<>(new KryoFactory(), 10);
         var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
         processor.put(generateCreateEvents(dt, "1", "2", "3"));
-        processor.put(generateUpdateEvents(dt, null, "update 001", "10"));//this update should be ignored, because it will be overridden by the next update event
-        processor.put(generateUpdateEvents(dt, null, "update 002", "10"));
+        processor.put(generateUpdateEvents(dt, "update 001", "10"));//this update should be ignored, because it will be overridden by the next update event
+        processor.put(generateUpdateEvents(dt, "update 002", "10"));
         processor.put(generateDeleteEvents(dt, "20"));
         processor.put(generateDeleteEvents(dt, "3")); //this delete will override the create event for id 3
         assertEquals(5, processor.buffer.size());
 
         var itemIdx = "1";
         //assert item create
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().get("Id"));
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().get("Name"));
+        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Id")).findFirst().get().data());
+        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Name")).findFirst().get().data());
         assertEquals("c", processor.buffer.get(itemIdx).op());
 
         //assert item update
         itemIdx = "10";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().get("Id"));
-        assertEquals("Name update 002 " + itemIdx, processor.buffer.get(itemIdx).event().get("Name"));
+        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Id")).findFirst().get().data());
+        assertEquals("Name update 002 " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Name")).findFirst().get().data());
         assertEquals("u", processor.buffer.get(itemIdx).op());
 
         //asert item delete
         itemIdx = "20";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().get("Id"));
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().get("Name"));
+        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Id")).findFirst().get().data());
+        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Name")).findFirst().get().data());
         assertEquals("d", processor.buffer.get(itemIdx).op());
 
         itemIdx = "3";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().get("Id"));
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().get("Name"));
+        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Id")).findFirst().get().data());
+        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+                .filter(f -> f.name().equals("Name")).findFirst().get().data());
         assertEquals("d", processor.buffer.get(itemIdx).op());
     }
 
@@ -220,205 +233,99 @@ class CdcDbzSchemaProcessorTest {
     }
 
     @Test
-    void testFlushWithSuccess() throws SQLException {
+    void testFlushWithSuccess() throws SQLException, IOException {
         var processor = new CdcDbzSchemaProcessor();
         var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
-        var statementMock = prepareToFlush(processor, null, null, null);
+        var statementMock = prepareToFlush(processor);
         processor.put(generateCreateEvents(dt, "1", "2", "3"));
-        processor.put(generateUpdateEvents(dt, null, "new", "4"));
+        processor.put(generateUpdateEvents(dt, "new", "4"));
         processor.put(generateDeleteEvents(dt, "5"));
         processor.flush(null);
 
-        verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"), assertArg(c -> assertEquals(769, c.available(), "CSV data length should be 459 bytes")), any(), eq(true));
-        verify(statementMock, times(1)).executeUpdate(matches("INSERT.*"));
-        verify(statementMock, times(1)).executeUpdate(matches("UPDATE.*"));
-        verify(statementMock, times(1)).executeUpdate(matches("DELETE(.*)final.id = ingest.id"));
-        verify(statementMock, times(1)).executeUpdate(matches("COPY.*"));
+        verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"),
+                assertArg(c -> assertNotNull(c, "CSV data stream should should not be null")), any(), eq(true));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("COPY.*"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
         assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
+        assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_stage")));
+        assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList().isEmpty());
     }
 
     @Test
-    void testCsvFormatSuccess() throws Throwable {
+    void testFlushWithSuccessV2() throws SQLException, IOException {
         var processor = new CdcDbzSchemaProcessor();
         var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
-        prepareToFlush(processor, null, null, null);
+        var statementMock = prepareToFlushV2(processor);
+        processor.put(generateCreateEvents(dt, "1", "2", "3"));
+        processor.put(generateUpdateEvents(dt, "new", "4"));
+        processor.put(generateDeleteEvents(dt, "5"));
+        processor.flush(null);
+
+        verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"),
+                assertArg(c -> assertNotNull(c, "CSV data stream should should not be null")), any(), eq(true));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("COPY.*"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
+        assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
+        assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_stage")));
+        assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList().isEmpty());
+    }
+
+    @Test
+    void testPrepareOrderedColumnsBasedOnTargetTableSuccess() throws Throwable {
+        var processor = new CdcDbzSchemaProcessor();
+        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
+        prepareToFlush(processor);
         processor.put(generateCreateEvents(dt, "1"));
         processor.put(generateDeleteEvents(dt, "2"));
         var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME));
+        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID,
+                List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME));
         var pattern = Pattern.compile("""
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111",(?<msgtimestampc>.*)
                 "2","Name 2","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",(?<msgtimestampd>.*)
                 """);
-
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
-    }
-
-    @Test
-    void testCsvFormatHashingCreateSuccess() throws Throwable {
-        var processor = new CdcDbzSchemaProcessor();
-        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
-        prepareToFlush(processor, Map.of(SnowflakeSinkConnector.CFG_HASHING_SUPPORT, true), List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH),
-                List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH));
-        processor.put(generateCreateEvents(dt, "1")); //hash CR32 --> d73d14a5
-        var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
-        var pattern = Pattern.compile("""
-                "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111","d73d14a5","d73d14a5",(?<msgtimestampc>.*)
-                """);
-
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
-    }
-
-    @Test
-    void testCsvFormatUpdateSuccess() throws Throwable {
-        var processor = new CdcDbzSchemaProcessor();
-        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
-        prepareToFlush(processor, Map.of(SnowflakeSinkConnector.CFG_HASHING_SUPPORT, true), List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH),
-                List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH));
-        processor.put(generateUpdateEvents(dt, null, "new", "1")); //hash CR32 --> b7405ebe
-        var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
-        var pattern = Pattern.compile("""
-                "1","Name new 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b7405ebe","d73d14a5",(?<msgtimestampc>.*)
-                """);
-
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
-    }
-
-    @Test
-    void testCsvFormatDeleteSuccess() throws Throwable {
-        var processor = new CdcDbzSchemaProcessor();
-        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
-        prepareToFlush(processor, Map.of(SnowflakeSinkConnector.CFG_HASHING_SUPPORT, true), List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH),
-                List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH));
-        processor.put(generateCreateEvents(dt, "1")); //hash CR32 --> d73d14a5
-        processor.put(generateDeleteEvents(dt, "1")); //hash CR32 --> d73d14a5
-        var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
-        var pattern = Pattern.compile("""
-                "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",,"d73d14a5",(?<msgtimestampd>.*)
-                """);
-
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
-    }
-
-    @Test
-    void testCsvFormatDuplicatedEventsSuccess() throws Throwable {
-        var processor = new CdcDbzSchemaProcessor();
-        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
-        prepareToFlush(processor, Map.of(SnowflakeSinkConnector.CFG_HASHING_SUPPORT, true), List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH),
-                List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH));
-        processor.put(generateCreateEvents(dt, "1")); //hash CR32 --> d73d14a5
-        processor.put(generateCreateEvents(dt, "1")); //hash CR32 --> d73d14a5
-        processor.put(generateDeleteEvents(dt, "2")); //hash CR32 --> 5abce0cc
-        processor.put(generateDeleteEvents(dt, "2")); //hash CR32 --> 5abce0cc
-        processor.put(generateUpdateEvents(dt, null, "new", "3")); //hash CR32 --> (previous)97134ed4,(new)b2fc442b
-        processor.put(generateUpdateEvents(dt, null, "new", "3")); //hash CR32 --> (previous)97134ed4,(new)b2fc442b
-        var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
-        var pattern = Pattern.compile("""
-                "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111","d73d14a5","d73d14a5",(?<msgtimestampc>.*)
-                "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111","d73d14a5","d73d14a5",(?<msgtimestampc2>.*)
-                "2","Name 2","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",,"5abce0cc",(?<msgtimestampd>.*)
-                "2","Name 2","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",,"5abce0cc",(?<msgtimestampd2>.*)
-                "3","Name new 3","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b2fc442b","97134ed4",(?<msgtimestampu>.*)
-                "3","Name new 3","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b2fc442b","97134ed4",(?<msgtimestampu2>.*)
-                """);
-
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
-    }
-
-    @Test
-    void testCsvFormatManageSameObjectCreateSuccess() throws Throwable {
-        var processor = new CdcDbzSchemaProcessor();
-        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
-        prepareToFlush(processor, Map.of(SnowflakeSinkConnector.CFG_HASHING_SUPPORT, true), List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH),
-                List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH));
-        processor.put(generateCreateEvents(dt, "1")); //hash CR32 --> d73d14a5
-        processor.put(generateUpdateEvents(dt, null, "new", "1")); //hash CR32 --> b7405ebe
-        var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
-        var pattern = Pattern.compile("""
-                "1","Name new 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b7405ebe","d73d14a5",(?<msgtimestampc>.*)
-                """);
-
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
-    }
-
-    @Test
-    void testCsvFormatManageSameObjectManyUpdatesSuccess() throws Throwable {
-        var processor = new CdcDbzSchemaProcessor();
-        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
-        prepareToFlush(processor, Map.of(SnowflakeSinkConnector.CFG_HASHING_SUPPORT, true), List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH),
-                List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH));
-        processor.put(generateCreateEvents(dt, "1")); //hash CR32 --> d73d14a5
-        processor.put(generateUpdateEvents(dt, null, "new", "1")); //hash CR32 --> b7405ebe
-        processor.put(generateUpdateEvents(dt, "new", "new 2", "1")); //hash CR32 --> b8598879
-        var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
-        var pattern = Pattern.compile("""
-                "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111","d73d14a5","d73d14a5",(?<msgtimestampc>.*)
-                "1","Name new 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b7405ebe","d73d14a5",(?<msgtimestampc2>.*)
-                "1","Name new 2 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b8598879","b7405ebe",(?<msgtimestampc3>.*)
-                """);
-
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
-    }
-
-    @Test
-    void testCsvFormatManyUpdatesHashesSameObjectSuccess() throws Throwable {
-        var processor = new CdcDbzSchemaProcessor();
-        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
-        prepareToFlush(processor, Map.of(SnowflakeSinkConnector.CFG_HASHING_SUPPORT, true), List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH),
-                List.of(IH_CURRENT_HASH, IH_PREVIOUS_HASH));
-        processor.put(generateUpdateEvents(dt, null, "new", "1")); //hash CR32 --> (previous)d73d14a5,(new)b7405ebe
-        processor.put(generateUpdateEvents(dt, "new", "new 002", "1")); //hash CR32 --> (previous)b7405ebe,(new)b3ebfb4d
-        processor.put(generateUpdateEvents(dt, "new 002", "new 003", "1")); //hash CR32 --> (previous)b3ebfb4d,(new)daa7febc
-        var blockID = "111";
-        var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID, List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IH_CURRENT_HASH, IH_PREVIOUS_HASH, IHDATETIME));
-        var pattern = Pattern.compile("""
-                "1","Name new 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b7405ebe","d73d14a5",(?<msgtimestampc>.*)
-                "1","Name new 002 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","b3ebfb4d","b7405ebe",(?<msgtimestampc2>.*)
-                "1","Name new 003 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","u","111","daa7febc","b3ebfb4d",(?<msgtimestampc3>.*)
-                """);
-
-        assertTrue(pattern.matcher(csvBaos.toString()).find(), String.format("CSV data [%s] should match with regex %s", csvBaos, pattern.pattern()));
+        var fileData = IOUtils.toString(Files.newInputStream(csvBaos), "UTF-8");
+        var files = Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList();
+        for (Path f : files) {
+            Files.deleteIfExists(Path.of(f.toFile().getAbsolutePath()));
+        }
+        assertTrue(pattern.matcher(fileData).find(), String.format("CSV data [%s] should match with regex %s", fileData, pattern.pattern()));
     }
 
     @Test
     void testStartCleanUpJobSuccess() throws SchedulerException, SQLException {
         var processor = new CdcDbzSchemaProcessor();
-        var statement = prepareToFlush(processor, null, null, null);
-        var props = generateConfig(null).originals();
+        var statement = prepareToFlush(processor);
+        var props = generateConfig().originals();
         props.put(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DURATION, "PT1S");
         processor.startCleanUpJob(new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, props));
-        verify(statement, timeout(4000).atLeast(3)).executeUpdate(matches("delete.*"));
+        verify(statement, timeout(4000).atLeast(3)).executeLargeUpdate(matches("delete.*"));
     }
 
-    private Statement prepareToFlush(CdcDbzSchemaProcessor processor, Map<String, Object> extraProps,
-                                     List<String> extraFinalFields, List<String> extraIngestTableFields) throws SQLException {
-        if (extraFinalFields == null) {
-            extraFinalFields = new ArrayList<>();
-        }
-        if (extraIngestTableFields == null) {
-            extraIngestTableFields = new ArrayList<>();
-        }
-        var ingestTableColumns = new ArrayList<>(List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"));
-        var finalTableColumns = new ArrayList<>(List.of("id", "name", "timestamp", "time", "date", "desc"));
-        finalTableColumns.addAll(extraFinalFields);
-        ingestTableColumns.addAll(extraIngestTableFields);
-        var statementMock = mockConnections(processor, finalTableColumns, ingestTableColumns, "test_table", "test_table_INGEST");
-        processor.configParameters(generateConfig(extraProps));
+    private Statement prepareToFlush(CdcDbzSchemaProcessor processor) throws SQLException {
+        var statementMock = mockConnections(processor,
+                List.of("id", "name", "timestamp", "time", "date", "desc"),
+                List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"),
+                "test_table", "test_table_INGEST");
+        processor.configParameters(generateConfig());
         processor.configMetadata();
         return statementMock;
     }
 
-    private AbstractConfig generateConfig(Map<String, Object> extraProps) {
-        if (extraProps == null) {
-            extraProps = new HashMap<>();
-        }
-        Map<String, Object> props = new HashMap<>(Map.of(
+    private Statement prepareToFlushV2(CdcDbzSchemaProcessor processor) throws SQLException {
+        var statementMock = mockConnections(processor,
+                List.of("id", "name", "timestamp", "time", "date", "desc"),
+                List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"),
+                "test_table", "test_table_INGEST");
+        processor.configParameters(generateConfig());
+        processor.configMetadataV2(generateConfigV2());
+        return statementMock;
+    }
+
+    private AbstractConfig generateConfig() {
+        return new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, Map.of(
                 "schema", "test_schema",
                 "table", "test_table",
                 "stage", "test_stage",
@@ -426,9 +333,18 @@ class CdcDbzSchemaProcessorTest {
                 "date_fields_convert", "date",
                 "time_fields_convert", "time"
         ));
-        props.putAll(extraProps);
+    }
 
-        return new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, props);
+    private AbstractConfig generateConfigV2() {
+        return new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, Map.of(
+                "schema", "test_schema",
+                "table", "test_table",
+                "stage", "test_stage",
+                "timestamp_fields_convert", "timestamp",
+                "date_fields_convert", "date",
+                "time_fields_convert", "time",
+                "final_table_field_names", List.of("id", "name", "timestamp", "time", "date", "desc")
+        ));
     }
 
     private Statement mockConnections(CdcDbzSchemaProcessor processor, List<String> columnsTable, List<String> columnsTableIngest, String table, String tableIngest) throws SQLException {
@@ -510,7 +426,7 @@ class CdcDbzSchemaProcessorTest {
         return records;
     }
 
-    private Collection<SinkRecord> generateUpdateEvents(LocalDateTime dt, String previousNameSuffix, String nameSuffix, String... ids) {
+    private Collection<SinkRecord> generateUpdateEvents(LocalDateTime dt, String nameSuffix, String... ids) {
         var records = new ArrayList<SinkRecord>();
 
         for (int i = 0; i < ids.length; i++) {
@@ -524,7 +440,7 @@ class CdcDbzSchemaProcessorTest {
                     new Struct(valueSchema)
                             .put("before", new Struct(valueAfterBeforeSchema)
                                     .put("Id", id)
-                                    .put("Name", previousNameSuffix == null ? String.format("Name %s", id) : String.format("Name %s %s", previousNameSuffix, id))
+                                    .put("Name", "Name " + id)
                                     .put("timestamp", dt.toInstant(ZoneOffset.UTC).toEpochMilli())
                                     .put("time", dt.getLong(ChronoField.NANO_OF_DAY))
                                     .put("date", (int) dt.getLong(ChronoField.EPOCH_DAY)))
@@ -567,5 +483,4 @@ class CdcDbzSchemaProcessorTest {
 
         return records;
     }
-
 }

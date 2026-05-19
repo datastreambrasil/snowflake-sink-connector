@@ -1,14 +1,14 @@
 package br.com.datastreambrasil.v2;
 
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.util.List;
-
 import org.quartz.Job;
 import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.List;
 
 public class CleanupJob implements Job {
 
@@ -31,7 +31,7 @@ public class CleanupJob implements Job {
 
         LOGGER.debug("Executing delete query: {}", deleteQuery);
         try (var stmt = connection.createStatement()) {
-            stmt.executeUpdate(deleteQuery);
+            stmt.executeLargeUpdate(deleteQuery);
         } catch (SQLException e) {
             LOGGER.error("Error while executing delete query", e);
         }
