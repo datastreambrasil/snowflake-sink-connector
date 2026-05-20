@@ -127,15 +127,7 @@ public abstract class AbstractProcessor {
 
             // Forca o driver a usar o contexto da sessao para metadata
             // evitando SHOW COLUMNS / SHOW OBJECTS implicitos
-            properties.put("CLIENT_METADATA_USE_SESSION_DATABASE", "true");
             properties.put("CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX", "true");
-
-            // Desabilita o cache de metadata que tambem dispara SHOW COLUMNS
-            properties.put("jdbc.disableParallelFetch", "true");
-
-            // Restringe SHOW COLUMNS para o schema definido na URL,
-            // sem necessidade de Statement adicional
-            properties.put("METADATA_FILTERING_SCOPE", "SCHEMA");
 
             connection = DriverManager.getConnection(config.getString(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);   // using the provided configuration.
