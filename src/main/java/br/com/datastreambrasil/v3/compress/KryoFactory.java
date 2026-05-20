@@ -1,5 +1,6 @@
 package br.com.datastreambrasil.v3.compress;
 
+import br.com.datastreambrasil.v3.compress.serializer.ByteBufferSerializer;
 import br.com.datastreambrasil.v3.compress.serializer.LocalDateTimeSerializer;
 import br.com.datastreambrasil.v3.model.FieldRecord;
 import br.com.datastreambrasil.v3.model.SnowflakeRecord;
@@ -8,6 +9,7 @@ import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import com.esotericsoftware.kryo.util.Pool;
 
+import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
 
 public class KryoFactory {
@@ -26,6 +28,8 @@ public class KryoFactory {
                 kryo.register(SnowflakeRecord.class, 10);
                 kryo.register(LocalDateTime.class, new LocalDateTimeSerializer(), 11);
                 kryo.register(FieldRecord.class, 12);
+                kryo.register(ByteBuffer.class, new ByteBufferSerializer(), 13);
+
                 return kryo;
             }
         };
