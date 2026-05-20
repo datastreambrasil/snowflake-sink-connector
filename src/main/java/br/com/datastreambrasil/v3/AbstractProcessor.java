@@ -133,6 +133,10 @@ public abstract class AbstractProcessor {
             // Desabilita o cache de metadata que tambem dispara SHOW COLUMNS
             properties.put("jdbc.disableParallelFetch", "true");
 
+            // Restringe SHOW COLUMNS para o schema definido na URL,
+            // sem necessidade de Statement adicional
+            properties.put("METADATA_FILTERING_SCOPE", "SCHEMA");
+
             connection = DriverManager.getConnection(config.getString(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);   // using the provided configuration.
         } catch (SQLException e) {
