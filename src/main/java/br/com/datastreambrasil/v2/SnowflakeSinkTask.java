@@ -131,6 +131,15 @@ public class SnowflakeSinkTask extends SinkTask {
             var properties = new Properties();
             properties.put("user", map.get(SnowflakeSinkConnector.CFG_USER));
             properties.put("password", map.get(SnowflakeSinkConnector.CFG_PASSWORD));
+
+            // Forca o driver a usar o contexto da sessao para metadata
+            // evitando SHOW COLUMNS / SHOW OBJECTS implicitos
+            properties.put("CLIENT_METADATA_USE_SESSION_DATABASE", "true");
+            properties.put("CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX", "true");
+
+            // Desabilita o cache de metadata que tambem dispara SHOW COLUMNS
+            properties.put("jdbc.disableParallelFetch", "true");
+
             connection = DriverManager.getConnection(map.get(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);
 
