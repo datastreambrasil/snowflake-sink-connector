@@ -54,7 +54,6 @@ public abstract class AbstractProcessor {
     protected static final String REGEX_REPLACEMENT_QUOTE_VALUE = "\"\"";
     protected static final String LINE_SEPARATOR_COMMA = ",";
     protected static final int SB_CSV_INITIAL_SIZE = 1000;
-    protected static final List<String> INGEST_ADDITIONAL_FIELDS = List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
 
     protected enum debeziumOperation {
         d,
@@ -64,6 +63,14 @@ public abstract class AbstractProcessor {
     }
 
     protected final static String INGEST_SUFFIX = "_INGEST";
+
+    private static final String FIND_COLUMNS = """
+        SELECT COLUMN_NAME
+        FROM   INFORMATION_SCHEMA.COLUMNS
+        WHERE  TABLE_SCHEMA = ?
+        AND    TABLE_NAME   = ?
+        ORDER  BY ORDINAL_POSITION
+        """;
 
     protected abstract void extraConfigsOnStart(AbstractConfig config);
 
@@ -77,10 +84,10 @@ public abstract class AbstractProcessor {
         configParameters(config);
         setupSnowflakeConnection(config);
 
-        if (config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES).isEmpty()) {
+        if (config.getBoolean(SnowflakeSinkConnector.FIND_COLUMNS_IN_METADATA)) {
             configMetadata();
         } else {
-            configMetadataV2(config);
+            configMetadataV2();
         }
 
         extraConfigsOnStart(config);
@@ -96,11 +103,14 @@ public abstract class AbstractProcessor {
         }
     }
 
-    protected void configMetadataV2(AbstractConfig config) {
-        columnsFinalTable = config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES);
-        columnsIngestTable = new ArrayList<>();
-        columnsIngestTable.addAll(config.getList(SnowflakeSinkConnector.FINAL_TABLE_FIELD_NAMES));
-        columnsIngestTable.addAll(INGEST_ADDITIONAL_FIELDS);
+    protected void configMetadataV2() {
+        try {
+            columnsFinalTable = getColumnsFromMetadataInformationSchema(tableName);
+            columnsIngestTable = getColumnsFromMetadataInformationSchema(ingestTableName);
+        } catch (SQLException e) {
+            LOGGER.error("Error while get metadata columns from snowflake", e);
+            throw new RuntimeException("Error while get metadata columns from snowflake", e);
+        }
     }
 
     protected void configParameters(AbstractConfig config) {
@@ -162,5 +172,30 @@ public abstract class AbstractProcessor {
         LOGGER.debug("Columns mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsNoDuplicate));
 
         return columnsNoDuplicate;
+    }
+
+    private List<String> getColumnsFromMetadataInformationSchema(String table) throws SQLException {
+        var columnsFromTable = new ArrayList<String>();
+        try (var stmt = connection.prepareStatement(FIND_COLUMNS)) {
+            stmt.setString(1, schemaName.toUpperCase());
+            stmt.setString(2, table.toUpperCase());
+
+            try (var rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    columnsFromTable.add(rs.getString("COLUMN_NAME"));
+                }
+            }
+        }
+
+        if (columnsFromTable.isEmpty()) {
+            throw new RuntimeException(
+                    "Empty columns returned from target table " + table + ", schema " + schemaName);
+        }
+
+        columnsFromTable.removeAll(ignoreColumns);
+
+        LOGGER.debug("Columns mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsFromTable));
+
+        return columnsFromTable;
     }
 }

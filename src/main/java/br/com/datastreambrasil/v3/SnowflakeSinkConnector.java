@@ -33,7 +33,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CONSUMER_OVERRIDE_MAX_POLL_INTERVAL_MS = "consumer.override.max.poll.interval.ms";
     protected static final String TMP_DATA_FOLDER = "tmp_data_folder";
     protected static final String BUFFER_INITIAL_CAPACITY = "buffer_initial_capacity";
-    protected static final String FINAL_TABLE_FIELD_NAMES = "final_table_field_names";
+    protected static final String FIND_COLUMNS_IN_METADATA = "find_columns_in_metadata";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -104,9 +104,9 @@ public class SnowflakeSinkConnector extends SinkConnector {
         .define(BUFFER_INITIAL_CAPACITY, ConfigDef.Type.INT, 1000000,
                 ConfigDef.Importance.HIGH,
                 "The initial buffer capacity.")
-        .define(FINAL_TABLE_FIELD_NAMES, ConfigDef.Type.LIST, List.of(),
+        .define(FIND_COLUMNS_IN_METADATA, ConfigDef.Type.BOOLEAN, Boolean.FALSE,
                 ConfigDef.Importance.HIGH,
-                "The names of the fields in the final table.");
+                "Define whether to retrieve column names from the metadata or by querying the information schema.");
 
     private Map<String, String> props;
 
