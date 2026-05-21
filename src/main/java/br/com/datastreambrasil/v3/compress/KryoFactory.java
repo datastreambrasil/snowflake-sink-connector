@@ -35,14 +35,13 @@ public class KryoFactory {
                 kryo.register(SnowflakeRecord.class, 10);
                 kryo.register(LocalDateTime.class, new LocalDateTimeSerializer(), 11);
                 kryo.register(FieldRecord.class, 12);
-                kryo.register(ByteBuffer.class, new ByteBufferSerializer(), 13);
 
-                kryo.register(byte[].class,        14);
-                kryo.register(ArrayList.class,     15);
-                kryo.register(HashMap.class,       16);
-                kryo.register(LinkedHashMap.class, 17);
-                kryo.register(List.class, 18);
-                kryo.register(Object.class, 19);
+                kryo.register(byte[].class,        13);
+                kryo.register(ArrayList.class,     14);
+                kryo.register(HashMap.class,       15);
+                kryo.register(LinkedHashMap.class, 16);
+                kryo.register(List.class, 17);
+                kryo.register(Object.class, 18);
 
                 return kryo;
             }
