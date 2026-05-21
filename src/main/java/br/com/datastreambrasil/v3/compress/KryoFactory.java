@@ -1,5 +1,6 @@
 package br.com.datastreambrasil.v3.compress;
 
+import br.com.datastreambrasil.v3.compress.serializer.ByteBufferSerializer;
 import br.com.datastreambrasil.v3.compress.serializer.LocalDateTimeSerializer;
 import br.com.datastreambrasil.v3.model.FieldRecord;
 import br.com.datastreambrasil.v3.model.SnowflakeRecord;
@@ -8,7 +9,12 @@ import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import com.esotericsoftware.kryo.util.Pool;
 
+import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 
 public class KryoFactory {
 
@@ -22,10 +28,21 @@ public class KryoFactory {
                 kryo.setRegistrationRequired(false);
                 kryo.setReferences(false); // desativa referências cruzadas → mais rápido
 
+                // ── ByteBuffer: addDefaultSerializer cobre todas as subclasses ──
+                kryo.addDefaultSerializer(ByteBuffer.class, ByteBufferSerializer.class);
+
                 // registrar classes frequentes para eliminar overhead de nome completo
                 kryo.register(SnowflakeRecord.class, 10);
                 kryo.register(LocalDateTime.class, new LocalDateTimeSerializer(), 11);
                 kryo.register(FieldRecord.class, 12);
+
+                kryo.register(byte[].class,        13);
+                kryo.register(ArrayList.class,     14);
+                kryo.register(HashMap.class,       15);
+                kryo.register(LinkedHashMap.class, 16);
+                kryo.register(List.class, 17);
+                kryo.register(Object.class, 18);
+
                 return kryo;
             }
         };
