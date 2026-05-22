@@ -65,10 +65,11 @@ public abstract class AbstractProcessor {
     protected final static String INGEST_SUFFIX = "_INGEST";
 
     private static final String FIND_COLUMNS = """
-        SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = '%s'
-        AND TABLE_NAME = '%s'
-        ORDER BY ORDINAL_POSITION
+        SELECT COLUMN_NAME
+        FROM   INFORMATION_SCHEMA.COLUMNS
+        WHERE  TABLE_SCHEMA = %s
+        AND    TABLE_NAME   = %s
+        ORDER  BY ORDINAL_POSITION
         """;
 
     protected abstract void extraConfigsOnStart(AbstractConfig config);
