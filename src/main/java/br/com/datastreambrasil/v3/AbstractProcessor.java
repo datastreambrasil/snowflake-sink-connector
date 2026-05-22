@@ -66,10 +66,10 @@ public abstract class AbstractProcessor {
 
     private static final String FIND_COLUMNS = """
         SELECT COLUMN_NAME
-        FROM   INFORMATION_SCHEMA.COLUMNS
-        WHERE  TABLE_SCHEMA = %s
-        AND    TABLE_NAME   = %s
-        ORDER  BY ORDINAL_POSITION
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ?
+        AND TABLE_NAME = ?
+        ORDER BY ORDINAL_POSITION
         """;
 
     protected abstract void extraConfigsOnStart(AbstractConfig config);
@@ -140,6 +140,11 @@ public abstract class AbstractProcessor {
             properties.put("CLIENT_METADATA_USE_SESSION_DATABASE", "true");
             properties.put("CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX", "true");
 
+            // Desabilita Arrow, usa JSON como formato de resultado
+            // Resolve ExceptionInInitializerError com sun.misc.Unsafe no Java 17+
+            // Ref: https://docs.snowflake.com/en/developer-guide/jdbc/jdbc-configure
+            properties.put("JDBC_QUERY_RESULT_FORMAT", "JSON");
+
             connection = DriverManager.getConnection(config.getString(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);   // using the provided configuration.
         } catch (SQLException e) {
@@ -173,10 +178,11 @@ public abstract class AbstractProcessor {
 
     private List<String> getColumnsFromMetadataInformationSchema(String table) throws SQLException {
         var columnsFromTable = new ArrayList<String>();
-        try (var stmt = connection.createStatement()) {
-            var findColumns = String.format(FIND_COLUMNS, schemaName, table);
-            LOGGER.debug("Find columns names by query: {}", findColumns);
-            try (var rs = stmt.executeQuery(findColumns)) {
+        try (var stmt = connection.prepareStatement(FIND_COLUMNS)) {
+            stmt.setString(1, schemaName.toUpperCase());
+            stmt.setString(2, table.toUpperCase());
+
+            try (var rs = stmt.executeQuery()) {
                 while (rs.next()) {
                     columnsFromTable.add(rs.getString("COLUMN_NAME"));
                 }
