@@ -72,6 +72,8 @@ public abstract class AbstractProcessor {
         ORDER BY ORDINAL_POSITION
         """;
 
+    protected static final List<String> INGEST_ADDITIONAL_FIELDS = List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
+
     protected abstract void extraConfigsOnStart(AbstractConfig config);
 
     protected abstract void put(Collection<SinkRecord> collection);
@@ -105,8 +107,9 @@ public abstract class AbstractProcessor {
 
     protected void configMetadataV2() {
         try {
-            columnsFinalTable = getColumnsFromMetadataInformationSchema(tableName);
             columnsIngestTable = getColumnsFromMetadataInformationSchema(ingestTableName);
+            columnsFinalTable = columnsIngestTable.stream()
+                    .filter(cit -> !INGEST_ADDITIONAL_FIELDS.contains(cit)).toList();
         } catch (SQLException e) {
             LOGGER.error("Error while get metadata columns from snowflake", e);
             throw new RuntimeException("Error while get metadata columns from snowflake", e);

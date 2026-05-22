@@ -1,5 +1,21 @@
 package br.com.datastreambrasil.v2;
 
+import net.snowflake.client.jdbc.SnowflakeConnection;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.AbstractConfig;
+import org.apache.kafka.connect.sink.SinkRecord;
+import org.apache.kafka.connect.sink.SinkTask;
+import org.quartz.JobBuilder;
+import org.quartz.JobDataMap;
+import org.quartz.Scheduler;
+import org.quartz.SchedulerException;
+import org.quartz.SimpleScheduleBuilder;
+import org.quartz.TriggerBuilder;
+import org.quartz.impl.StdSchedulerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -21,21 +37,6 @@ import java.util.Properties;
 import java.util.TimeZone;
 import java.util.TreeMap;
 import java.util.UUID;
-import net.snowflake.client.jdbc.SnowflakeConnection;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.config.AbstractConfig;
-import org.apache.kafka.connect.sink.SinkRecord;
-import org.apache.kafka.connect.sink.SinkTask;
-import org.quartz.JobBuilder;
-import org.quartz.JobDataMap;
-import org.quartz.Scheduler;
-import org.quartz.SchedulerException;
-import org.quartz.SimpleScheduleBuilder;
-import org.quartz.TriggerBuilder;
-import org.quartz.impl.StdSchedulerFactory;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 @SuppressWarnings("unchecked")
 public class SnowflakeSinkTask extends SinkTask {
@@ -73,6 +74,15 @@ public class SnowflakeSinkTask extends SinkTask {
     protected static final String KEY_SNOWFLAKE_CONNECTION = "snowflakeConnection";
 
     private List<String> columnsFinalTable = new ArrayList<>();
+
+    private static final String LINE_SEPARATOR_COMMA = ",";
+    private static final String FIND_COLUMNS = """
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ?
+        AND TABLE_NAME = ?
+        ORDER BY ORDINAL_POSITION
+        """;
 
     @Override
     public String version() {
@@ -137,14 +147,20 @@ public class SnowflakeSinkTask extends SinkTask {
             properties.put("CLIENT_METADATA_USE_SESSION_DATABASE", "true");
             properties.put("CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX", "true");
 
-            // Desabilita o cache de metadata que tambem dispara SHOW COLUMNS
-            properties.put("jdbc.disableParallelFetch", "true");
+            // Desabilita Arrow, usa JSON como formato de resultado
+            // Resolve ExceptionInInitializerError com sun.misc.Unsafe no Java 17+
+            // Ref: https://docs.snowflake.com/en/developer-guide/jdbc/jdbc-configure
+            properties.put("JDBC_QUERY_RESULT_FORMAT", "JSON");
 
             connection = DriverManager.getConnection(map.get(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);
 
             //fill columns
-            columnsFinalTable = getColumnsFromMetadata(tableName);
+            if (config.getBoolean(SnowflakeSinkConnector.FIND_COLUMNS_IN_METADATA)) {
+                columnsFinalTable = getColumnsFromMetadata(tableName);
+            } else {
+                columnsFinalTable = getColumnsFromMetadataInformationSchema(tableName);
+            }
 
             // job quartz config
             if (!disableCleanUpJob) {
@@ -405,6 +421,31 @@ public class SnowflakeSinkTask extends SinkTask {
         columnsFromTable.removeAll(ignoreColumns);
 
         LOGGER.debug("Columns mapped from target table: {}", String.join(",", columnsFromTable));
+
+        return columnsFromTable;
+    }
+
+    private List<String> getColumnsFromMetadataInformationSchema(String table) throws SQLException {
+        var columnsFromTable = new ArrayList<String>();
+        try (var stmt = connection.prepareStatement(FIND_COLUMNS)) {
+            stmt.setString(1, schemaName.toUpperCase());
+            stmt.setString(2, table.toUpperCase());
+
+            try (var rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    columnsFromTable.add(rs.getString("COLUMN_NAME"));
+                }
+            }
+        }
+
+        if (columnsFromTable.isEmpty()) {
+            throw new RuntimeException(
+                    "Empty columns returned from target table " + table + ", schema " + schemaName);
+        }
+
+        columnsFromTable.removeAll(ignoreColumns);
+
+        LOGGER.debug("Columns mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsFromTable));
 
         return columnsFromTable;
     }
