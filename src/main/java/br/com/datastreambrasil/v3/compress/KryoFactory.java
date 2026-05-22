@@ -15,7 +15,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 public class KryoFactory {
 
@@ -43,7 +42,6 @@ public class KryoFactory {
                 kryo.register(LinkedHashMap.class, 16);
                 kryo.register(List.class, 17);
                 kryo.register(Object.class, 18);
-                kryo.register(Map.class, 19);
 
                 return kryo;
             }
