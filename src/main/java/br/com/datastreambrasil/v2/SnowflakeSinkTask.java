@@ -82,6 +82,10 @@ public class SnowflakeSinkTask extends SinkTask {
         ORDER BY ORDINAL_POSITION
         """;
 
+    private static final String CLIENT_METADATA_USE_SESSION_DATABASE = "CLIENT_METADATA_USE_SESSION_DATABASE";
+    private static final String CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX = "CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX";
+    private static final String JDBC_QUERY_RESULT_FORMAT = "JDBC_QUERY_RESULT_FORMAT";
+
     @Override
     public String version() {
         return SnowflakeSinkConnector.VERSION;
@@ -142,13 +146,13 @@ public class SnowflakeSinkTask extends SinkTask {
 
             // Forca o driver a usar o contexto da sessao para metadata
             // evitando SHOW COLUMNS / SHOW OBJECTS implicitos
-            properties.put("CLIENT_METADATA_USE_SESSION_DATABASE", "true");
-            properties.put("CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX", "true");
+            properties.put(CLIENT_METADATA_USE_SESSION_DATABASE, "true");
+            properties.put(CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX, "true");
 
             // Desabilita Arrow, usa JSON como formato de resultado
             // Resolve ExceptionInInitializerError com sun.misc.Unsafe no Java 17+
             // Ref: https://docs.snowflake.com/en/developer-guide/jdbc/jdbc-configure
-            properties.put("JDBC_QUERY_RESULT_FORMAT", "JSON");
+            properties.put(JDBC_QUERY_RESULT_FORMAT, "JSON");
 
             connection = DriverManager.getConnection(map.get(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);

@@ -1,5 +1,6 @@
 package br.com.datastreambrasil.v3;
 
+import org.apache.kafka.common.config.AbstractConfig;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
@@ -7,6 +8,7 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -23,7 +25,7 @@ class AbstractProcessorInformationSchemaTest {
         when(processor.connection.createStatement()).thenReturn(mockStatement);
         when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
 
-        processor.configMetadataV2();
+        processor.configMetadataV2(createConfig());
 
         verify(processor.connection).createStatement();
         verify(processor.connection, never()).prepareStatement(anyString());
@@ -38,7 +40,7 @@ class AbstractProcessorInformationSchemaTest {
         when(processor.connection.createStatement()).thenReturn(mockStatement);
         when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
 
-        processor.configMetadataV2();
+        processor.configMetadataV2(createConfig());
 
         verify(mockStatement).executeQuery(argThat(sql ->
                 sql.contains("'MY_SCHEMA'") && sql.contains("'MY_TABLE_INGEST'")));
@@ -54,7 +56,7 @@ class AbstractProcessorInformationSchemaTest {
         when(processor.connection.createStatement()).thenReturn(mockStatement);
         when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
 
-        processor.configMetadataV2();
+        processor.configMetadataV2(createConfig());
 
         assertEquals(ingestColumns, processor.columnsIngestTable);
         assertEquals(List.of("COL1", "COL2"), processor.columnsFinalTable);
@@ -69,7 +71,7 @@ class AbstractProcessorInformationSchemaTest {
         when(processor.connection.createStatement()).thenReturn(mockStatement);
         when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
 
-        assertThrows(RuntimeException.class, processor::configMetadataV2);
+        assertThrows(RuntimeException.class, () -> processor.configMetadataV2(createConfig()));
     }
 
     @Test
@@ -82,9 +84,13 @@ class AbstractProcessorInformationSchemaTest {
         when(processor.connection.createStatement()).thenReturn(mockStatement);
         when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
 
-        processor.configMetadataV2();
+        processor.configMetadataV2(createConfig());
 
         assertEquals(List.of("COL1", "COL3"), processor.columnsIngestTable);
+    }
+
+    private AbstractConfig createConfig() {
+        return new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, Map.of());
     }
 
     private CdcDbzSchemaProcessor createProcessor(String schemaName, String ingestTableName) {

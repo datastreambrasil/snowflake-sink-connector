@@ -29,11 +29,12 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_REDIS_PORT = "redis_port";
     protected static final String CFG_REDIS_KEY_TTL_SECONDS = "redis_key_ttl_seconds";
     protected static final String CFG_PROFILE = "profile";
-    protected static final String CONSUMER_OVERRIDE_MAX_POLL_RECORDS = "consumer.override.max.poll.records";
-    protected static final String CONSUMER_OVERRIDE_MAX_POLL_INTERVAL_MS = "consumer.override.max.poll.interval.ms";
-    protected static final String TMP_DATA_FOLDER = "tmp_data_folder";
-    protected static final String BUFFER_INITIAL_CAPACITY = "buffer_initial_capacity";
-    protected static final String FIND_COLUMNS_IN_METADATA = "find_columns_in_metadata";
+    protected static final String CFG_CONSUMER_OVERRIDE_MAX_POLL_RECORDS = "consumer.override.max.poll.records";
+    protected static final String CFG_CONSUMER_OVERRIDE_MAX_POLL_INTERVAL_MS = "consumer.override.max.poll.interval.ms";
+    protected static final String CFG_TMP_DATA_FOLDER = "tmp_data_folder";
+    protected static final String CFG_BUFFER_INITIAL_CAPACITY = "buffer_initial_capacity";
+    protected static final String CFG_FIND_COLUMNS_IN_METADATA = "find_columns_in_metadata";
+    protected static final String CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS = "exclude_ingest_additional_fields";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -91,22 +92,25 @@ public class SnowflakeSinkConnector extends SinkConnector {
         .define(CFG_TRUNCATE_WHEN_NODATA_AFTER_SECONDS, ConfigDef.Type.INT, 1800,
             ConfigDef.Importance.HIGH,
             "If we don't receive any event for this amount of time, we will truncate the table in snowflake")
-        .define(CONSUMER_OVERRIDE_MAX_POLL_RECORDS, ConfigDef.Type.INT, 500,
+        .define(CFG_CONSUMER_OVERRIDE_MAX_POLL_RECORDS, ConfigDef.Type.INT, 500,
                 ConfigDef.Importance.MEDIUM,
                 "Limits the records that KafkaConsumer retrieves from the broker — before they reach the connector.")
-        .define(CONSUMER_OVERRIDE_MAX_POLL_INTERVAL_MS, ConfigDef.Type.STRING, "300000",
+        .define(CFG_CONSUMER_OVERRIDE_MAX_POLL_INTERVAL_MS, ConfigDef.Type.STRING, "300000",
                 ConfigDef.Importance.MEDIUM,
                 "Limits the time the broker will wait for the connector processing to finish — " +
                         "If the time expires, the broker understands that the consumer has died and triggers rebalancing in the consumer group.")
-        .define(TMP_DATA_FOLDER, ConfigDef.Type.STRING, "/mnt/data/csv_data_to_stage",
+        .define(CFG_TMP_DATA_FOLDER, ConfigDef.Type.STRING, "/mnt/data/csv_data_to_stage",
                 ConfigDef.Importance.MEDIUM,
                 "Destination directory for the data to be sent to the stage for ingestion into the tables by COPY")
-        .define(BUFFER_INITIAL_CAPACITY, ConfigDef.Type.INT, 1000000,
+        .define(CFG_BUFFER_INITIAL_CAPACITY, ConfigDef.Type.INT, 1000000,
                 ConfigDef.Importance.HIGH,
                 "The initial buffer capacity.")
-        .define(FIND_COLUMNS_IN_METADATA, ConfigDef.Type.BOOLEAN, Boolean.FALSE,
+        .define(CFG_FIND_COLUMNS_IN_METADATA, ConfigDef.Type.BOOLEAN, Boolean.FALSE,
                 ConfigDef.Importance.HIGH,
-                "Define whether to retrieve column names from the metadata or by querying the information schema.");
+                "Define whether to retrieve column names from the metadata or by querying the information schema.")
+        .define(CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS, ConfigDef.Type.LIST, List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID"),
+                ConfigDef.Importance.HIGH,
+                "Defines which fields from the ingest table should be disregarded in the final table.");
 
     private Map<String, String> props;
 
