@@ -25,6 +25,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_JOB_CLEANUP_DISABLE = "job_cleanup_disable";
     protected static final String CFG_PAYLOAD_CDC_FORMAT = "payload_cdc_format";
     protected static final String CFG_IGNORE_COLUMNS = "ignore_columns";
+    protected static final String FIND_COLUMNS_IN_METADATA = "find_columns_in_metadata";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -79,7 +80,10 @@ public class SnowflakeSinkConnector extends SinkConnector {
                     "If true, we will remove the stage after copying it to snowflake")
             .define(CFG_TRUNCATE_WHEN_NODATA_AFTER_SECONDS, ConfigDef.Type.INT, 1800,
                     ConfigDef.Importance.HIGH,
-                    "If we don't receive any event for this amount of time, we will truncate the table in snowflake");
+                    "If we don't receive any event for this amount of time, we will truncate the table in snowflake")
+            .define(FIND_COLUMNS_IN_METADATA, ConfigDef.Type.BOOLEAN, Boolean.FALSE,
+                    ConfigDef.Importance.HIGH,
+                    "Define whether to retrieve column names from the metadata or by querying the information schema.");
 
     private Map<String, String> props;
 
