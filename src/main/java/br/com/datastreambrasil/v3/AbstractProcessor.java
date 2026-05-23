@@ -65,10 +65,8 @@ public abstract class AbstractProcessor {
     protected final static String INGEST_SUFFIX = "_INGEST";
 
     private static final String FIND_COLUMNS = """
-        SELECT COLUMN_NAME
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = ?
-        AND TABLE_NAME = ?
+        SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'
         ORDER BY ORDINAL_POSITION
         """;
 
@@ -181,14 +179,10 @@ public abstract class AbstractProcessor {
 
     private List<String> getColumnsFromMetadataInformationSchema(String table) throws SQLException {
         var columnsFromTable = new ArrayList<String>();
-        try (var stmt = connection.prepareStatement(FIND_COLUMNS)) {
-            stmt.setString(1, schemaName.toUpperCase());
-            stmt.setString(2, table.toUpperCase());
-
-            try (var rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    columnsFromTable.add(rs.getString("COLUMN_NAME"));
-                }
+        String sql = String.format(FIND_COLUMNS, schemaName.toUpperCase(), table.toUpperCase());
+        try (var stmt = connection.createStatement(); var rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                columnsFromTable.add(rs.getString("COLUMN_NAME"));
             }
         }
 
