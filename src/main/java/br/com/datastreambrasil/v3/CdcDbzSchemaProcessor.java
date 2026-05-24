@@ -128,7 +128,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         for (var entry : buffer.entrySet()) {
             var tableBaseName = entry.getKey();
             var tableBuffer = entry.getValue();
-
             if (!tableBuffer.isEmpty()) {
                 flushTable(tableBaseName, tableBuffer);
             }
@@ -144,7 +143,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         Path tmpFilePathToInsert = null;
 
         try {
-            LOGGER.debug("Preparing to send {} records from buffer. To stage {} and table {}", tableBuffer.size(), stageName, tableBaseName);
+            LOGGER.debug("Preparing to send {} records from buffer. To stage {} and table {}",
+                    tableBuffer.size(), tableBaseName, tableBaseName);
 
             ensureColumnsForTable(tableBaseName);
             var ingestCols = columnsIngestTable.get(tableBaseName);
@@ -152,11 +152,11 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             var tablePks = pksByTable.get(tableBaseName);
             var blockID = UUID.randomUUID().toString();
             var startTimeMain = System.currentTimeMillis();
-            tmpFilePathToInsert = prepareOrderedColumnsBasedOnTargetTable(blockID, ingestCols, tableBuffer);
+            tmpFilePathToInsert = prepareOrderedColumnsBasedOnTargetTable(blockID, ingestCols, tableBuffer, tableBaseName);
 
             try (var inputStream = Files.newInputStream(tmpFilePathToInsert)) {
                 var startTimeUpload = System.currentTimeMillis();
-                snowflakeConnection.uploadStream(stageName, "/", inputStream, destFileName, true);
+                snowflakeConnection.uploadStream(tableBaseName, "/", inputStream, destFileName, true);
                 var endTimeUpload = System.currentTimeMillis();
                 LOGGER.debug("Uploaded {} records in {} ms", tableBuffer.size(), endTimeUpload - startTimeUpload);
 
@@ -164,7 +164,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 try (var stmt = connection.createStatement()) {
 
                     String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName,
-                            String.join(",", ingestCols), stageName, destFileName);
+                            String.join(",", ingestCols), tableBaseName, destFileName);
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
                     stmt.executeLargeUpdate(copyInto);
 
@@ -222,10 +222,10 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     }
 
     private void discardData(Path csvToInsert) throws IOException {
-        LOGGER.debug("Discard CSV file data: {} of stage: {} after SnowFlake upload and COPY to ingest table.",
-                csvToInsert.getFileName().toString(), stageName);
+        LOGGER.debug("Discard CSV temp file: {} after SnowFlake upload and COPY to ingest table.",
+                csvToInsert.getFileName().toString());
         Files.deleteIfExists(csvToInsert);
-        LOGGER.debug("Discarded CSV file data: {} of stage: {}.", csvToInsert.getFileName().toString(), stageName);
+        LOGGER.debug("Discarded CSV temp file: {}.", csvToInsert.getFileName().toString());
     }
 
     @Override
@@ -314,7 +314,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 .reduce((a, b) -> String.format("%s and %s", a, b)).orElseThrow();
     }
 
-    protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable, CompressedMap<SnowflakeRecord> tableBuffer) throws Throwable {
+    protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable, CompressedMap<SnowflakeRecord> tableBuffer, String tableBaseName) throws Throwable {
         var startTime = System.currentTimeMillis();
         var stringBuilder = new StringBuilder(tableBuffer.size() * SB_CSV_INITIAL_SIZE);
 
@@ -407,13 +407,13 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         stringBuilder.trimToSize();
 
-        return this.generateTempFile(stringBuilder, startTime);
+        return this.generateTempFile(stringBuilder, startTime, tableBaseName);
     }
 
-    private Path generateTempFile(StringBuilder stringBuilder, long startTime) throws IOException {
-        Files.createDirectories(Path.of(String.format("%s/%s", tmpDataFolder, stageName)));
+    private Path generateTempFile(StringBuilder stringBuilder, long startTime, String tableBaseName) throws IOException {
+        Files.createDirectories(Path.of(String.format("%s/%s", tmpDataFolder, tableBaseName)));
 
-        var tmpPath = Path.of(String.format("%s/%s/%s.csv", tmpDataFolder, stageName, UUID.randomUUID()));
+        var tmpPath = Path.of(String.format("%s/%s/%s.csv", tmpDataFolder, tableBaseName, UUID.randomUUID()));
         Files.deleteIfExists(tmpPath);
 
         var resultPath = Files.writeString(tmpPath, stringBuilder.toString(), StandardOpenOption.CREATE);

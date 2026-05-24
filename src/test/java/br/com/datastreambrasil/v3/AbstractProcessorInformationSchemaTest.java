@@ -21,10 +21,8 @@ class AbstractProcessorInformationSchemaTest {
     void testUsesMetadataApiNotStatement() throws Exception {
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
         var dbMeta = mock(DatabaseMetaData.class);
-        var rsTable = buildResultSet(List.of("COL1"));
         var rsIngest = buildResultSet(List.of("COL1", "IH_TOPIC"));
         when(processor.connection.getMetaData()).thenReturn(dbMeta);
-        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE"), any())).thenReturn(rsTable);
         when(dbMeta.getColumns(any(), any(), eq("MY_TABLE_INGEST"), any())).thenReturn(rsIngest);
 
         processor.ensureColumnsForTable("MY_TABLE");
@@ -38,35 +36,31 @@ class AbstractProcessorInformationSchemaTest {
     void testColumnsLoadedOnlyOnceForSameTable() throws Exception {
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
         var dbMeta = mock(DatabaseMetaData.class);
-        var rsTable = buildResultSet(List.of("COL1"));
         var rsIngest = buildResultSet(List.of("COL1", "IH_TOPIC"));
         when(processor.connection.getMetaData()).thenReturn(dbMeta);
-        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE"), any())).thenReturn(rsTable);
         when(dbMeta.getColumns(any(), any(), eq("MY_TABLE_INGEST"), any())).thenReturn(rsIngest);
 
         processor.ensureColumnsForTable("MY_TABLE");
         processor.ensureColumnsForTable("MY_TABLE"); // second call — must hit cache
 
-        // Each table triggers exactly 2 metadata calls (table + ingest), only on the first invocation
-        verify(dbMeta, times(2)).getColumns(any(), any(), any(), any());
+        // Only one metadata call per table (only the ingest table is queried), only on the first invocation
+        verify(dbMeta, times(1)).getColumns(any(), any(), any(), any());
     }
 
     @Test
     void testColumnsIngestTableAndFinalTablePopulated() throws Exception {
         var ingestColumns = List.of("COL1", "COL2", "IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
-        var finalColumns = List.of("COL1", "COL2");
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
         var dbMeta = mock(DatabaseMetaData.class);
         var rsIngest = buildResultSet(ingestColumns);
-        var rsTable = buildResultSet(finalColumns);
         when(processor.connection.getMetaData()).thenReturn(dbMeta);
         when(dbMeta.getColumns(any(), any(), eq("MY_TABLE_INGEST"), any())).thenReturn(rsIngest);
-        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE"), any())).thenReturn(rsTable);
 
         processor.ensureColumnsForTable("MY_TABLE");
 
         assertEquals(ingestColumns, processor.columnsIngestTable.get("MY_TABLE"));
-        assertEquals(finalColumns, processor.columnsFinalTable.get("MY_TABLE"));
+        // finalTable is derived from ingestTable by filtering out excludeIngestAdditionalFields
+        assertEquals(List.of("COL1", "COL2"), processor.columnsFinalTable.get("MY_TABLE"));
     }
 
     @Test
@@ -86,10 +80,8 @@ class AbstractProcessorInformationSchemaTest {
         processor.ignoreColumns.add("COL2");
         var dbMeta = mock(DatabaseMetaData.class);
         var rsIngest = buildResultSet(List.of("COL1", "COL2", "COL3"));
-        var rsTable = buildResultSet(List.of("COL1", "COL3"));
         when(processor.connection.getMetaData()).thenReturn(dbMeta);
         when(dbMeta.getColumns(any(), any(), eq("MY_TABLE_INGEST"), any())).thenReturn(rsIngest);
-        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE"), any())).thenReturn(rsTable);
 
         processor.ensureColumnsForTable("MY_TABLE");
 
@@ -127,6 +119,7 @@ class AbstractProcessorInformationSchemaTest {
         processor.schemaName = schemaName;
         processor.tableName = tableBaseName;
         processor.ignoreColumns = new ArrayList<>();
+        processor.excludeIngestAdditionalFields = List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
         return processor;
     }
 

@@ -35,6 +35,7 @@ public abstract class AbstractProcessor {
     protected Map<String, List<String>> columnsFinalTable = new HashMap<>();
     protected Map<String, List<String>> columnsIngestTable = new HashMap<>();
     protected List<String> ignoreColumns = new ArrayList<>();
+    protected List<String> excludeIngestAdditionalFields = new ArrayList<>();
     protected List<String> timestampFieldsConvert = new ArrayList<>();
     protected List<String> dateFieldsConvert = new ArrayList<>();
     protected List<String> timeFieldsConvert = new ArrayList<>();
@@ -94,6 +95,7 @@ public abstract class AbstractProcessor {
         dateFieldsConvert.addAll(config.getList(SnowflakeSinkConnector.CFG_DATE_FIELDS_CONVERT));
         timeFieldsConvert.addAll(config.getList(SnowflakeSinkConnector.CFG_TIME_FIELDS_CONVERT));
         ignoreColumns.addAll(config.getList(SnowflakeSinkConnector.CFG_IGNORE_COLUMNS));
+        excludeIngestAdditionalFields.addAll(config.getList(SnowflakeSinkConnector.CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS));
 
         tmpDataFolder = config.getString(SnowflakeSinkConnector.CFG_TMP_DATA_FOLDER);
         bufferInitialCapacity = config.getInt(SnowflakeSinkConnector.CFG_BUFFER_INITIAL_CAPACITY);
@@ -139,8 +141,13 @@ public abstract class AbstractProcessor {
         }
         try {
             String ingestTable = tableBaseName + INGEST_SUFFIX;
-            columnsIngestTable.put(tableBaseName, getColumnsFromMetadata(ingestTable));
-            columnsFinalTable.put(tableBaseName, getColumnsFromMetadata(tableBaseName));
+            List<String> ingestCols = getColumnsFromMetadata(ingestTable);
+            List<String> finalCols = ingestCols.stream()
+                    .filter(col -> excludeIngestAdditionalFields.stream()
+                            .noneMatch(excluded -> excluded.equalsIgnoreCase(col)))
+                    .toList();
+            columnsIngestTable.put(tableBaseName, ingestCols);
+            columnsFinalTable.put(tableBaseName, finalCols);
         } catch (SQLException e) {
             LOGGER.error("Error while loading metadata columns for table {}", tableBaseName, e);
             throw new RuntimeException("Error while loading metadata columns for table " + tableBaseName, e);

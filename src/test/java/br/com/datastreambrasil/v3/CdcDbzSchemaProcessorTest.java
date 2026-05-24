@@ -278,8 +278,8 @@ class CdcDbzSchemaProcessorTest {
         verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
         verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
         assertEquals(0, processor.buffer.size(), "Buffer map should be empty after flush");
-        assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_stage")));
-        assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList().isEmpty());
+        assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_table")));
+        assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_table")).toList().isEmpty());
     }
 
     @Test
@@ -293,13 +293,13 @@ class CdcDbzSchemaProcessorTest {
         var tableBuffer = processor.buffer.get("test_table");
         var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID,
                 List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME),
-                tableBuffer);
+                tableBuffer, "test_table");
         var pattern = Pattern.compile("""
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111",(?<msgtimestampc>.*)
                 "2","Name 2","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",(?<msgtimestampd>.*)
                 """);
         var fileData = IOUtils.toString(Files.newInputStream(csvBaos), "UTF-8");
-        var files = Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList();
+        var files = Files.list(Path.of("/mnt/data/csv_data_to_stage/test_table")).toList();
         for (Path f : files) {
             Files.deleteIfExists(Path.of(f.toFile().getAbsolutePath()));
         }
