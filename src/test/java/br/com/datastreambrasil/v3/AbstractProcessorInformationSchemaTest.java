@@ -1,103 +1,131 @@
 package br.com.datastreambrasil.v3;
 
-import org.apache.kafka.common.config.AbstractConfig;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
-import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+/**
+ * Tests AbstractProcessor's lazy column loading via the JDBC metadata API.
+ */
 class AbstractProcessorInformationSchemaTest {
 
     @Test
-    void testUsesStatementNotPreparedStatement() throws Exception {
-        var processor = createProcessor("MY_SCHEMA", "MY_TABLE_INGEST");
-        var mockStatement = mock(Statement.class);
-        var mockResultSet = buildResultSet(List.of("COL1"));
+    void testUsesMetadataApiNotStatement() throws Exception {
+        var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        var dbMeta = mock(DatabaseMetaData.class);
+        var rsTable = buildResultSet(List.of("COL1"));
+        var rsIngest = buildResultSet(List.of("COL1", "IH_TOPIC"));
+        when(processor.connection.getMetaData()).thenReturn(dbMeta);
+        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE"), any())).thenReturn(rsTable);
+        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE_INGEST"), any())).thenReturn(rsIngest);
 
-        when(processor.connection.createStatement()).thenReturn(mockStatement);
-        when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
+        processor.ensureColumnsForTable("MY_TABLE");
 
-        processor.configMetadataV2(createConfig());
-
-        verify(processor.connection).createStatement();
+        verify(processor.connection, atLeastOnce()).getMetaData();
+        verify(processor.connection, never()).createStatement();
         verify(processor.connection, never()).prepareStatement(anyString());
     }
 
     @Test
-    void testSqlContainsUppercaseSchemaAndTable() throws Exception {
-        var processor = createProcessor("my_schema", "my_table_INGEST");
-        var mockStatement = mock(Statement.class);
-        var mockResultSet = buildResultSet(List.of("COL1"));
+    void testColumnsLoadedOnlyOnceForSameTable() throws Exception {
+        var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        var dbMeta = mock(DatabaseMetaData.class);
+        var rsTable = buildResultSet(List.of("COL1"));
+        var rsIngest = buildResultSet(List.of("COL1", "IH_TOPIC"));
+        when(processor.connection.getMetaData()).thenReturn(dbMeta);
+        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE"), any())).thenReturn(rsTable);
+        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE_INGEST"), any())).thenReturn(rsIngest);
 
-        when(processor.connection.createStatement()).thenReturn(mockStatement);
-        when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
+        processor.ensureColumnsForTable("MY_TABLE");
+        processor.ensureColumnsForTable("MY_TABLE"); // second call — must hit cache
 
-        processor.configMetadataV2(createConfig());
-
-        verify(mockStatement).executeQuery(argThat(sql ->
-                sql.contains("'MY_SCHEMA'") && sql.contains("'MY_TABLE_INGEST'")));
+        // Each table triggers exactly 2 metadata calls (table + ingest), only on the first invocation
+        verify(dbMeta, times(2)).getColumns(any(), any(), any(), any());
     }
 
     @Test
     void testColumnsIngestTableAndFinalTablePopulated() throws Exception {
         var ingestColumns = List.of("COL1", "COL2", "IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
-        var processor = createProcessor("MY_SCHEMA", "MY_TABLE_INGEST");
-        var mockStatement = mock(Statement.class);
-        var mockResultSet = buildResultSet(ingestColumns);
+        var finalColumns = List.of("COL1", "COL2");
+        var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        var dbMeta = mock(DatabaseMetaData.class);
+        var rsIngest = buildResultSet(ingestColumns);
+        var rsTable = buildResultSet(finalColumns);
+        when(processor.connection.getMetaData()).thenReturn(dbMeta);
+        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE_INGEST"), any())).thenReturn(rsIngest);
+        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE"), any())).thenReturn(rsTable);
 
-        when(processor.connection.createStatement()).thenReturn(mockStatement);
-        when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
+        processor.ensureColumnsForTable("MY_TABLE");
 
-        processor.configMetadataV2(createConfig());
-
-        assertEquals(ingestColumns, processor.columnsIngestTable);
-        assertEquals(List.of("COL1", "COL2"), processor.columnsFinalTable);
+        assertEquals(ingestColumns, processor.columnsIngestTable.get("MY_TABLE"));
+        assertEquals(finalColumns, processor.columnsFinalTable.get("MY_TABLE"));
     }
 
     @Test
     void testThrowsExceptionWhenNoColumnsFound() throws Exception {
-        var processor = createProcessor("MY_SCHEMA", "MY_TABLE_INGEST");
-        var mockStatement = mock(Statement.class);
-        var mockResultSet = buildResultSet(List.of());
+        var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        var dbMeta = mock(DatabaseMetaData.class);
+        var rsEmpty = buildResultSet(List.of());
+        when(processor.connection.getMetaData()).thenReturn(dbMeta);
+        when(dbMeta.getColumns(any(), any(), any(), any())).thenReturn(rsEmpty);
 
-        when(processor.connection.createStatement()).thenReturn(mockStatement);
-        when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
-
-        assertThrows(RuntimeException.class, () -> processor.configMetadataV2(createConfig()));
+        assertThrows(RuntimeException.class, () -> processor.ensureColumnsForTable("MY_TABLE"));
     }
 
     @Test
     void testIgnoreColumnsAreFiltered() throws Exception {
-        var processor = createProcessor("MY_SCHEMA", "MY_TABLE_INGEST");
+        var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
         processor.ignoreColumns.add("COL2");
-        var mockStatement = mock(Statement.class);
-        var mockResultSet = buildResultSet(List.of("COL1", "COL2", "COL3"));
+        var dbMeta = mock(DatabaseMetaData.class);
+        var rsIngest = buildResultSet(List.of("COL1", "COL2", "COL3"));
+        var rsTable = buildResultSet(List.of("COL1", "COL3"));
+        when(processor.connection.getMetaData()).thenReturn(dbMeta);
+        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE_INGEST"), any())).thenReturn(rsIngest);
+        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE"), any())).thenReturn(rsTable);
 
-        when(processor.connection.createStatement()).thenReturn(mockStatement);
-        when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
+        processor.ensureColumnsForTable("MY_TABLE");
 
-        processor.configMetadataV2(createConfig());
-
-        assertEquals(List.of("COL1", "COL3"), processor.columnsIngestTable);
+        assertEquals(List.of("COL1", "COL3"), processor.columnsIngestTable.get("MY_TABLE"));
     }
 
-    private AbstractConfig createConfig() {
-        return new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, Map.of());
+    @Test
+    void testKnownIngestTablesPopulatedOnGetOrCreateBuffer() {
+        var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        processor.bufferInitialCapacity = 100;
+
+        processor.getOrCreateBuffer("MY_TABLE");
+
+        assertTrue(processor.knownIngestTables.contains("MY_TABLE_INGEST"),
+                "knownIngestTables should contain MY_TABLE_INGEST after buffer creation");
     }
 
-    private CdcDbzSchemaProcessor createProcessor(String schemaName, String ingestTableName) {
+    @Test
+    void testExtractTableNameFromTopicWithDot() {
+        var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        assertEquals("tabelaX", processor.extractTableNameFromTopic("compras.loja-b.tabelaX"));
+        assertEquals("tabelaZ", processor.extractTableNameFromTopic("compras.loja-c.tabelaZ"));
+    }
+
+    @Test
+    void testExtractTableNameFromTopicWithoutDotFallsBackToTableName() {
+        var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        assertEquals("MY_TABLE", processor.extractTableNameFromTopic("no_dot_topic"));
+        assertEquals("MY_TABLE", processor.extractTableNameFromTopic(null));
+    }
+
+    private CdcDbzSchemaProcessor createProcessor(String schemaName, String tableBaseName) {
         var processor = new CdcDbzSchemaProcessor();
         processor.connection = mock(Connection.class);
         processor.schemaName = schemaName;
-        processor.ingestTableName = ingestTableName;
+        processor.tableName = tableBaseName;
         processor.ignoreColumns = new ArrayList<>();
         return processor;
     }

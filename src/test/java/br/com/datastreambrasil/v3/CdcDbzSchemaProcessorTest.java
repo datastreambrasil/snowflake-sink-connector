@@ -1,7 +1,5 @@
 package br.com.datastreambrasil.v3;
 
-import br.com.datastreambrasil.v3.compress.CompressedMap;
-import br.com.datastreambrasil.v3.compress.KryoFactory;
 import br.com.datastreambrasil.v3.exception.InvalidStructException;
 import net.snowflake.client.jdbc.SnowflakeConnection;
 import net.snowflake.client.jdbc.internal.apache.commons.io.IOUtils;
@@ -79,45 +77,77 @@ class CdcDbzSchemaProcessorTest {
     @Test
     void testPutSuccess() {
         var processor = new CdcDbzSchemaProcessor();
-        processor.buffer = new CompressedMap<>(new KryoFactory(), 10);
+        processor.tableName = "test_table";
+        processor.bufferInitialCapacity = 10;
         var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
         processor.put(generateCreateEvents(dt, "1", "2", "3"));
         processor.put(generateUpdateEvents(dt, "update 001", "10"));//this update should be ignored, because it will be overridden by the next update event
         processor.put(generateUpdateEvents(dt, "update 002", "10"));
         processor.put(generateDeleteEvents(dt, "20"));
         processor.put(generateDeleteEvents(dt, "3")); //this delete will override the create event for id 3
-        assertEquals(5, processor.buffer.size());
+
+        var tableBuffer = processor.buffer.get("test_table");
+        assertEquals(5, tableBuffer.size());
 
         var itemIdx = "1";
         //assert item create
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals("Name " + itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("c", processor.buffer.get(itemIdx).op());
+        assertEquals("c", tableBuffer.get(itemIdx).op());
 
         //assert item update
         itemIdx = "10";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name update 002 " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals("Name update 002 " + itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("u", processor.buffer.get(itemIdx).op());
+        assertEquals("u", tableBuffer.get(itemIdx).op());
 
         //asert item delete
         itemIdx = "20";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals("Name " + itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("d", processor.buffer.get(itemIdx).op());
+        assertEquals("d", tableBuffer.get(itemIdx).op());
 
         itemIdx = "3";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals("Name " + itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("d", processor.buffer.get(itemIdx).op());
+        assertEquals("d", tableBuffer.get(itemIdx).op());
+    }
+
+    @Test
+    void testPutSuccess_MultipleTopics() {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.tableName = "default_table";
+        processor.bufferInitialCapacity = 10;
+        var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
+
+        // Records with dot-separated topics — table name extracted from last segment
+        processor.put(generateCreateEventsForTopic(dt, "compras.loja-b.tabelaX", "1", "2"));
+        processor.put(generateCreateEventsForTopic(dt, "compras.loja-c.tabelaZ", "3"));
+
+        assertTrue(processor.buffer.containsKey("tabelaX"), "Buffer should contain tabelaX");
+        assertTrue(processor.buffer.containsKey("tabelaZ"), "Buffer should contain tabelaZ");
+        assertEquals(2, processor.buffer.get("tabelaX").size());
+        assertEquals(1, processor.buffer.get("tabelaZ").size());
+    }
+
+    @Test
+    void testPutSuccess_TopicWithoutDotFallsBackToTableName() {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.tableName = "fallback_table";
+        processor.bufferInitialCapacity = 10;
+        var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
+
+        processor.put(generateCreateEventsForTopic(dt, "no_dot_topic", "1"));
+
+        assertTrue(processor.buffer.containsKey("fallback_table"), "Buffer should use tableName as fallback");
     }
 
     @Test
@@ -247,7 +277,7 @@ class CdcDbzSchemaProcessorTest {
         verify(statementMock, times(1)).executeLargeUpdate(matches("COPY.*"));
         verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
         verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
-        assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
+        assertEquals(0, processor.buffer.size(), "Buffer map should be empty after flush");
         assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_stage")));
         assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList().isEmpty());
     }
@@ -260,8 +290,10 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateCreateEvents(dt, "1"));
         processor.put(generateDeleteEvents(dt, "2"));
         var blockID = "111";
+        var tableBuffer = processor.buffer.get("test_table");
         var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID,
-                List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME));
+                List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME),
+                tableBuffer);
         var pattern = Pattern.compile("""
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111",(?<msgtimestampc>.*)
                 "2","Name 2","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",(?<msgtimestampd>.*)
@@ -277,7 +309,10 @@ class CdcDbzSchemaProcessorTest {
     @Test
     void testStartCleanUpJobSuccess() throws SchedulerException, SQLException {
         var processor = new CdcDbzSchemaProcessor();
+        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
         var statement = prepareToFlush(processor);
+        // put() registers "test_table_INGEST" in knownIngestTables via getOrCreateBuffer
+        processor.put(generateCreateEvents(dt, "1"));
         var props = generateConfig().originals();
         props.put(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DURATION, "PT1S");
         processor.startCleanUpJob(new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, props));
@@ -290,7 +325,6 @@ class CdcDbzSchemaProcessorTest {
                 List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"),
                 "test_table", "test_table_INGEST");
         processor.configParameters(generateConfig());
-        processor.configMetadata();
         return statementMock;
     }
 
@@ -359,12 +393,16 @@ class CdcDbzSchemaProcessorTest {
     }
 
     private Collection<SinkRecord> generateCreateEvents(LocalDateTime dt, String... ids) {
+        return generateCreateEventsForTopic(dt, "test_topic", ids);
+    }
+
+    private Collection<SinkRecord> generateCreateEventsForTopic(LocalDateTime dt, String topic, String... ids) {
         var records = new ArrayList<SinkRecord>();
 
         for (int i = 0; i < ids.length; i++) {
             var id = ids[i];
             records.add(new SinkRecord(
-                    "test_topic",
+                    topic,
                     0,
                     keySchema,
                     new Struct(keySchema).put("id", id),
