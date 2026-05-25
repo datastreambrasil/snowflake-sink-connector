@@ -38,7 +38,7 @@ class AbstractProcessorInformationSchemaTest {
     @Test
     void testUsesStatementWhenFindColumnsMetadataIsFalse() throws Exception {
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
-        // findInColumnsMetadata defaults to false
+        processor.findInColumnsMetadata = false;
         mockStatementForColumns(processor, List.of("COL1", "IH_TOPIC"));
 
         processor.ensureColumnsForTable("MY_TABLE");

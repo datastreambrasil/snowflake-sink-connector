@@ -106,7 +106,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
         .define(CFG_BUFFER_INITIAL_CAPACITY, ConfigDef.Type.INT, 1000000,
                 ConfigDef.Importance.HIGH,
                 "The initial buffer capacity.")
-        .define(CFG_FIND_COLUMNS_IN_METADATA, ConfigDef.Type.BOOLEAN, Boolean.FALSE,
+        .define(CFG_FIND_COLUMNS_IN_METADATA, ConfigDef.Type.BOOLEAN, Boolean.TRUE,
                 ConfigDef.Importance.HIGH,
                 "Define whether to retrieve column names from the metadata or by querying the information schema.")
         .define(CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS, ConfigDef.Type.LIST, List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID"),
