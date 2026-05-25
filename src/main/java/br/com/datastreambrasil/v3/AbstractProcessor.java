@@ -230,7 +230,7 @@ public abstract class AbstractProcessor {
 
     protected CompressedMap<SnowflakeRecord> getOrCreateBuffer(String tableBaseName) {
         return buffer.computeIfAbsent(tableBaseName, k -> {
-            knownIngestTables.add(tableBaseName + INGEST_SUFFIX);
+            knownIngestTables.add(String.format("%s%s", tableBaseName, INGEST_SUFFIX));
             return new CompressedMap<>(new KryoFactory(), bufferInitialCapacity);
         });
     }
