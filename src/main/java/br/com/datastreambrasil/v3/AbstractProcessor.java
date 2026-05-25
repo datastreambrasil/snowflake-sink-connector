@@ -82,6 +82,12 @@ public abstract class AbstractProcessor {
         ORDER BY ORDINAL_POSITION
         """;
 
+    private static final String FIND_ALL_INGEST_TABLE_COLUMNS = """
+        SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME LIKE '%%_INGEST'
+        ORDER BY TABLE_NAME, ORDINAL_POSITION
+        """;
+
     protected abstract void extraConfigsOnStart(AbstractConfig config);
 
     protected abstract void put(Collection<SinkRecord> collection);
@@ -93,6 +99,9 @@ public abstract class AbstractProcessor {
     protected void start(AbstractConfig config) {
         configParameters(config);
         setupSnowflakeConnection(config);
+        if (processMultiTables) {
+            preloadAllIngestTableColumns();
+        }
         extraConfigsOnStart(config);
     }
 
@@ -156,12 +165,12 @@ public abstract class AbstractProcessor {
      * No-op if columns for the table are already cached.
      */
     protected void ensureColumnsForTable(String tableBaseName) {
-        if (columnsIngestTable.containsKey(tableBaseName)) {
+        if (columnsIngestTable.containsKey(tableBaseName.toUpperCase())) {
             return;
         }
 
         try {
-            String ingestTable = String.format("%s%s", tableBaseName, INGEST_SUFFIX);
+            String ingestTable = tableBaseName + INGEST_SUFFIX;
             List<String> ingestCols = findInColumnsMetadata
                     ? getColumnsFromMetadata(ingestTable)
                     : getColumnsFromMetadataInformationSchema(ingestTable);
@@ -171,12 +180,52 @@ public abstract class AbstractProcessor {
                             .noneMatch(excluded -> excluded.equalsIgnoreCase(col)))
                     .toList();
 
-            columnsIngestTable.put(tableBaseName, ingestCols);
-            columnsFinalTable.put(tableBaseName, finalCols);
+            columnsIngestTable.put(tableBaseName.toUpperCase(), ingestCols);
+            columnsFinalTable.put(tableBaseName.toUpperCase(), finalCols);
         } catch (SQLException e) {
             LOGGER.error("Error while loading metadata columns for table {}", tableBaseName, e);
             throw new RuntimeException("Error while loading metadata columns for table " + tableBaseName, e);
         }
+    }
+
+    // Package-private for testability
+    void preloadAllIngestTableColumns() {
+        String sql = String.format(FIND_ALL_INGEST_TABLE_COLUMNS, schemaName.toUpperCase());
+        Map<String, List<String>> rawByIngestTable = new HashMap<>();
+
+        try (var stmt = connection.createStatement(); var rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                rawByIngestTable
+                        .computeIfAbsent(rs.getString("TABLE_NAME"), k -> new ArrayList<>())
+                        .add(rs.getString("COLUMN_NAME"));
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Error pre-loading ingest table columns for schema " + schemaName, e);
+        }
+
+        if (rawByIngestTable.isEmpty()) {
+            LOGGER.warn("No _INGEST tables found in schema {} during pre-load", schemaName);
+            return;
+        }
+
+        for (var entry : rawByIngestTable.entrySet()) {
+            String ingestTableName = entry.getKey();
+            String baseTableName = ingestTableName.substring(0, ingestTableName.length() - INGEST_SUFFIX.length());
+
+            List<String> ingestCols = new ArrayList<>(entry.getValue());
+            ingestCols.removeAll(ignoreColumns);
+
+            List<String> finalCols = ingestCols.stream()
+                    .filter(col -> excludeIngestAdditionalFields.stream()
+                            .noneMatch(excluded -> excluded.equalsIgnoreCase(col)))
+                    .toList();
+
+            columnsIngestTable.put(baseTableName, ingestCols);
+            columnsFinalTable.put(baseTableName, finalCols);
+            LOGGER.debug("Pre-loaded {} columns for table: {}", ingestCols.size(), baseTableName);
+        }
+
+        LOGGER.info("Pre-loaded columns for {} ingest tables in schema {}", rawByIngestTable.size(), schemaName);
     }
 
     protected CompressedMap<SnowflakeRecord> getOrCreateBuffer(String tableBaseName) {

@@ -146,9 +146,17 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             LOGGER.debug("Preparing to send {} records from buffer. To stage {} and table {}",
                     tableBuffer.size(), stageName, tableBaseName);
 
-            ensureColumnsForTable(tableBaseName);
-            var ingestCols = columnsIngestTable.get(tableBaseName);
-            var finalCols = columnsFinalTable.get(tableBaseName);
+            if (processMultiTables) {
+                if (!columnsIngestTable.containsKey(tableBaseName.toUpperCase())) {
+                    throw new RuntimeException("No pre-loaded columns for table: " + tableBaseName +
+                            ". Verify the _INGEST table exists in schema " + schemaName);
+                }
+            } else {
+                ensureColumnsForTable(tableBaseName);
+            }
+
+            var ingestCols = columnsIngestTable.get(tableBaseName.toUpperCase());
+            var finalCols = columnsFinalTable.get(tableBaseName.toUpperCase());
             var tablePks = pksByTable.get(tableBaseName);
             var blockID = UUID.randomUUID().toString();
             var startTimeMain = System.currentTimeMillis();

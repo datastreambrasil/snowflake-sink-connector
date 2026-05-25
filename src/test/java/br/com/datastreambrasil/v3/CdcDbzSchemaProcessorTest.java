@@ -283,6 +283,38 @@ class CdcDbzSchemaProcessorTest {
     }
 
     @Test
+    void testFlushWithSuccess_MultiTables() throws SQLException, IOException {
+        var processor = new CdcDbzSchemaProcessor();
+        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
+        var statementMock = prepareToFlushMultiTables(processor);
+        processor.put(generateCreateEvents(dt, "1", "2", "3"));
+        processor.put(generateUpdateEvents(dt, "new", "4"));
+        processor.put(generateDeleteEvents(dt, "5"));
+        processor.flush(null);
+
+        // stageName = tableBaseName ("test_table") when processMultiTables = true
+        verify(processor.snowflakeConnection, times(1)).uploadStream(eq("test_table"), eq("/"),
+                assertArg(c -> assertNotNull(c, "CSV data stream should not be null")), any(), eq(true));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("COPY.*"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
+        assertEquals(0, processor.buffer.size(), "Buffer map should be empty after flush");
+    }
+
+    @Test
+    void testFlushThrowsWhenTableNotPreloaded() throws SQLException {
+        var processor = new CdcDbzSchemaProcessor();
+        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
+        mockConnections(processor,
+                List.of("id"), List.of("id", "ih_topic"), "test_table", "test_table_INGEST");
+        processor.configParameters(generateConfigMultiTables());
+        // columnsIngestTable intentionally not pre-populated
+        processor.put(generateCreateEvents(dt, "1"));
+
+        assertThrows(RuntimeException.class, () -> processor.flush(null));
+    }
+
+    @Test
     void testPrepareOrderedColumnsBasedOnTargetTableSuccess() throws Throwable {
         var processor = new CdcDbzSchemaProcessor();
         var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
@@ -328,6 +360,20 @@ class CdcDbzSchemaProcessorTest {
         return statementMock;
     }
 
+    private Statement prepareToFlushMultiTables(CdcDbzSchemaProcessor processor) throws SQLException {
+        var statementMock = mockConnections(processor,
+                List.of("id", "name", "timestamp", "time", "date", "desc"),
+                List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"),
+                "test_table", "test_table_INGEST");
+        processor.configParameters(generateConfigMultiTables());
+        // Simulates columns pre-loaded by preloadAllIngestTableColumns() — uppercase key
+        processor.columnsIngestTable.put("TEST_TABLE",
+                List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"));
+        processor.columnsFinalTable.put("TEST_TABLE",
+                List.of("id", "name", "timestamp", "time", "date", "desc"));
+        return statementMock;
+    }
+
     private AbstractConfig generateConfig() {
         return new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, Map.of(
                 "schema", "test_schema",
@@ -337,6 +383,19 @@ class CdcDbzSchemaProcessorTest {
                 "date_fields_convert", "date",
                 "time_fields_convert", "time",
                 "find_columns_in_metadata", Boolean.TRUE
+        ));
+    }
+
+    private AbstractConfig generateConfigMultiTables() {
+        return new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, Map.of(
+                "schema", "test_schema",
+                "table", "test_table",
+                "stage", "test_stage",
+                "timestamp_fields_convert", "timestamp",
+                "date_fields_convert", "date",
+                "time_fields_convert", "time",
+                "find_columns_in_metadata", Boolean.TRUE,
+                "process_multiples_tables", Boolean.TRUE
         ));
     }
 

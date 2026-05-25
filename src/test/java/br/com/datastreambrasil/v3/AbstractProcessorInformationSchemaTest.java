@@ -92,6 +92,36 @@ class AbstractProcessorInformationSchemaTest {
     }
 
     @Test
+    void testPreloadAllIngestTableColumnsPopulatesCache() throws Exception {
+        var processor = createProcessor("MY_SCHEMA", "ANY_TABLE");
+        var rows = List.of(
+                new String[]{"TABLE_A_INGEST", "COL1"},
+                new String[]{"TABLE_A_INGEST", "COL2"},
+                new String[]{"TABLE_A_INGEST", "IH_TOPIC"},
+                new String[]{"TABLE_B_INGEST", "COL3"},
+                new String[]{"TABLE_B_INGEST", "IH_OP"}
+        );
+        mockBulkStatementForColumns(processor, rows);
+
+        processor.preloadAllIngestTableColumns();
+
+        assertEquals(List.of("COL1", "COL2", "IH_TOPIC"), processor.columnsIngestTable.get("TABLE_A"));
+        assertEquals(List.of("COL1", "COL2"), processor.columnsFinalTable.get("TABLE_A"));
+        assertEquals(List.of("COL3", "IH_OP"), processor.columnsIngestTable.get("TABLE_B"));
+        assertEquals(List.of("COL3"), processor.columnsFinalTable.get("TABLE_B"));
+    }
+
+    @Test
+    void testPreloadAllIngestTableColumnsEmptySchema() throws Exception {
+        var processor = createProcessor("MY_SCHEMA", "ANY_TABLE");
+        mockBulkStatementForColumns(processor, List.of());
+
+        processor.preloadAllIngestTableColumns();
+
+        assertTrue(processor.columnsIngestTable.isEmpty());
+    }
+
+    @Test
     void testKnownIngestTablesPopulatedOnGetOrCreateBuffer() {
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
         processor.bufferInitialCapacity = 100;
@@ -124,6 +154,21 @@ class AbstractProcessorInformationSchemaTest {
         processor.ignoreColumns = new ArrayList<>();
         processor.excludeIngestAdditionalFields = List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
         return processor;
+    }
+
+    private Statement mockBulkStatementForColumns(CdcDbzSchemaProcessor processor, List<String[]> rows) throws Exception {
+        var stmtMock = mock(Statement.class);
+        var rsMock = mock(ResultSet.class);
+        var idx = new int[]{-1};
+        when(rsMock.next()).thenAnswer(a -> {
+            idx[0]++;
+            return idx[0] < rows.size();
+        });
+        when(rsMock.getString("TABLE_NAME")).thenAnswer(a -> rows.get(idx[0])[0]);
+        when(rsMock.getString("COLUMN_NAME")).thenAnswer(a -> rows.get(idx[0])[1]);
+        when(processor.connection.createStatement()).thenReturn(stmtMock);
+        when(stmtMock.executeQuery(any())).thenReturn(rsMock);
+        return stmtMock;
     }
 
     private Statement mockStatementForColumns(CdcDbzSchemaProcessor processor, List<String> columns) throws Exception {
