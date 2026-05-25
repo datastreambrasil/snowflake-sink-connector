@@ -35,6 +35,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_BUFFER_INITIAL_CAPACITY = "buffer_initial_capacity";
     protected static final String CFG_FIND_COLUMNS_IN_METADATA = "find_columns_in_metadata";
     protected static final String CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS = "exclude_ingest_additional_fields";
+    protected static final String CFG_PROCESS_MULTIPLE_TABLES = "process_multiples_tables";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -110,7 +111,10 @@ public class SnowflakeSinkConnector extends SinkConnector {
                 "Define whether to retrieve column names from the metadata or by querying the information schema.")
         .define(CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS, ConfigDef.Type.LIST, List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID"),
                 ConfigDef.Importance.HIGH,
-                "Defines which fields from the ingest table should be disregarded in the final table.");
+                "Defines which fields from the ingest table should be disregarded in the final table.")
+        .define(CFG_PROCESS_MULTIPLE_TABLES, ConfigDef.Type.BOOLEAN, Boolean.FALSE,
+                ConfigDef.Importance.HIGH,
+                "Determine whether to process multiple tables.");
 
     private Map<String, String> props;
 

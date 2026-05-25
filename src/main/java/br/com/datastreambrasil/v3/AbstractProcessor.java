@@ -43,6 +43,8 @@ public abstract class AbstractProcessor {
     protected Set<String> knownIngestTables = ConcurrentHashMap.newKeySet();
     protected int bufferInitialCapacity;
     protected String tmpDataFolder;
+    protected boolean processMultiTables;
+    protected boolean findInColumnsMetadata;
 
     protected static final String AFTER = "after";
     protected static final String BEFORE = "before";
@@ -59,6 +61,7 @@ public abstract class AbstractProcessor {
     protected static final String REGEX_REPLACEMENT_QUOTE_VALUE = "\"\"";
     protected static final String LINE_SEPARATOR_COMMA = ",";
     protected static final int SB_CSV_INITIAL_SIZE = 1000;
+    protected static final String FILE_SEPARATOR = "/";
 
     protected enum debeziumOperation {
         d,
@@ -71,6 +74,13 @@ public abstract class AbstractProcessor {
 
     private static final String CLIENT_METADATA_USE_SESSION_DATABASE = "CLIENT_METADATA_USE_SESSION_DATABASE";
     private static final String CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX = "CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX";
+    private static final String JDBC_QUERY_RESULT_FORMAT = "JDBC_QUERY_RESULT_FORMAT";
+
+    private static final String FIND_COLUMNS = """
+        SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'
+        ORDER BY ORDINAL_POSITION
+        """;
 
     protected abstract void extraConfigsOnStart(AbstractConfig config);
 
@@ -99,6 +109,8 @@ public abstract class AbstractProcessor {
 
         tmpDataFolder = config.getString(SnowflakeSinkConnector.CFG_TMP_DATA_FOLDER);
         bufferInitialCapacity = config.getInt(SnowflakeSinkConnector.CFG_BUFFER_INITIAL_CAPACITY);
+        processMultiTables = config.getBoolean(SnowflakeSinkConnector.CFG_PROCESS_MULTIPLE_TABLES);
+        findInColumnsMetadata = config.getBoolean(SnowflakeSinkConnector.CFG_FIND_COLUMNS_IN_METADATA);
     }
 
     protected void setupSnowflakeConnection(AbstractConfig config) {
@@ -111,6 +123,14 @@ public abstract class AbstractProcessor {
             // evitando SHOW COLUMNS / SHOW OBJECTS implicitos
             properties.put(CLIENT_METADATA_USE_SESSION_DATABASE, "true");
             properties.put(CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX, "true");
+
+            if (!findInColumnsMetadata) {
+                // Desabilita Arrow, usa JSON como formato de resultado
+                // Resolve ExceptionInInitializerError com sun.misc.Unsafe no Java 17+
+                // Ref: https://docs.snowflake.com/en/developer-guide/jdbc/jdbc-configure
+                properties.put(JDBC_QUERY_RESULT_FORMAT, "JSON");
+                LOGGER.warn("Find columns by information_schema query to schema: {}", schemaName);
+            }
 
             connection = DriverManager.getConnection(config.getString(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);
@@ -139,13 +159,18 @@ public abstract class AbstractProcessor {
         if (columnsIngestTable.containsKey(tableBaseName)) {
             return;
         }
+
         try {
-            String ingestTable = tableBaseName + INGEST_SUFFIX;
-            List<String> ingestCols = getColumnsFromMetadata(ingestTable);
+            String ingestTable = String.format("%s%s", tableBaseName, INGEST_SUFFIX);
+            List<String> ingestCols = findInColumnsMetadata
+                    ? getColumnsFromMetadata(ingestTable)
+                    : getColumnsFromMetadataInformationSchema(ingestTable);
+
             List<String> finalCols = ingestCols.stream()
                     .filter(col -> excludeIngestAdditionalFields.stream()
                             .noneMatch(excluded -> excluded.equalsIgnoreCase(col)))
                     .toList();
+
             columnsIngestTable.put(tableBaseName, ingestCols);
             columnsFinalTable.put(tableBaseName, finalCols);
         } catch (SQLException e) {
@@ -178,8 +203,29 @@ public abstract class AbstractProcessor {
         columnsFromTable.removeAll(ignoreColumns);
         var columnsNoDuplicate = columnsFromTable.stream().distinct().toList();
 
-        LOGGER.debug("Columns mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsNoDuplicate));
+        LOGGER.debug("Columns: {} mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsNoDuplicate), table);
 
         return columnsNoDuplicate;
+    }
+
+    private List<String> getColumnsFromMetadataInformationSchema(String table) throws SQLException {
+        var columnsFromTable = new ArrayList<String>();
+        String sql = String.format(FIND_COLUMNS, schemaName.toUpperCase(), table.toUpperCase());
+        try (var stmt = connection.createStatement(); var rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                columnsFromTable.add(rs.getString("COLUMN_NAME"));
+            }
+        }
+
+        if (columnsFromTable.isEmpty()) {
+            throw new RuntimeException(
+                    "Empty columns returned from target table " + table + ", schema " + schemaName);
+        }
+
+        columnsFromTable.removeAll(ignoreColumns);
+
+        LOGGER.debug("Columns: {} mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsFromTable), table);
+
+        return columnsFromTable;
     }
 }

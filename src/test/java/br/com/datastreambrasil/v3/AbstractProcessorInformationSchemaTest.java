@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -13,13 +14,15 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Tests AbstractProcessor's lazy column loading via the JDBC metadata API.
+ * Tests AbstractProcessor's lazy column loading via both the JDBC metadata API
+ * and the INFORMATION_SCHEMA query path.
  */
 class AbstractProcessorInformationSchemaTest {
 
     @Test
     void testUsesMetadataApiNotStatement() throws Exception {
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        processor.findInColumnsMetadata = true;
         var dbMeta = mock(DatabaseMetaData.class);
         var rsIngest = buildResultSet(List.of("COL1", "IH_TOPIC"));
         when(processor.connection.getMetaData()).thenReturn(dbMeta);
@@ -33,28 +36,34 @@ class AbstractProcessorInformationSchemaTest {
     }
 
     @Test
+    void testUsesStatementWhenFindColumnsMetadataIsFalse() throws Exception {
+        var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        // findInColumnsMetadata defaults to false
+        mockStatementForColumns(processor, List.of("COL1", "IH_TOPIC"));
+
+        processor.ensureColumnsForTable("MY_TABLE");
+
+        verify(processor.connection, atLeastOnce()).createStatement();
+        verify(processor.connection, never()).getMetaData();
+    }
+
+    @Test
     void testColumnsLoadedOnlyOnceForSameTable() throws Exception {
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
-        var dbMeta = mock(DatabaseMetaData.class);
-        var rsIngest = buildResultSet(List.of("COL1", "IH_TOPIC"));
-        when(processor.connection.getMetaData()).thenReturn(dbMeta);
-        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE_INGEST"), any())).thenReturn(rsIngest);
+        mockStatementForColumns(processor, List.of("COL1", "IH_TOPIC"));
 
         processor.ensureColumnsForTable("MY_TABLE");
         processor.ensureColumnsForTable("MY_TABLE"); // second call — must hit cache
 
-        // Only one metadata call per table (only the ingest table is queried), only on the first invocation
-        verify(dbMeta, times(1)).getColumns(any(), any(), any(), any());
+        // createStatement called only once: only on the first invocation
+        verify(processor.connection, times(1)).createStatement();
     }
 
     @Test
     void testColumnsIngestTableAndFinalTablePopulated() throws Exception {
         var ingestColumns = List.of("COL1", "COL2", "IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
-        var dbMeta = mock(DatabaseMetaData.class);
-        var rsIngest = buildResultSet(ingestColumns);
-        when(processor.connection.getMetaData()).thenReturn(dbMeta);
-        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE_INGEST"), any())).thenReturn(rsIngest);
+        mockStatementForColumns(processor, ingestColumns);
 
         processor.ensureColumnsForTable("MY_TABLE");
 
@@ -66,10 +75,7 @@ class AbstractProcessorInformationSchemaTest {
     @Test
     void testThrowsExceptionWhenNoColumnsFound() throws Exception {
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
-        var dbMeta = mock(DatabaseMetaData.class);
-        var rsEmpty = buildResultSet(List.of());
-        when(processor.connection.getMetaData()).thenReturn(dbMeta);
-        when(dbMeta.getColumns(any(), any(), any(), any())).thenReturn(rsEmpty);
+        mockStatementForColumns(processor, List.of());
 
         assertThrows(RuntimeException.class, () -> processor.ensureColumnsForTable("MY_TABLE"));
     }
@@ -78,10 +84,7 @@ class AbstractProcessorInformationSchemaTest {
     void testIgnoreColumnsAreFiltered() throws Exception {
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
         processor.ignoreColumns.add("COL2");
-        var dbMeta = mock(DatabaseMetaData.class);
-        var rsIngest = buildResultSet(List.of("COL1", "COL2", "COL3"));
-        when(processor.connection.getMetaData()).thenReturn(dbMeta);
-        when(dbMeta.getColumns(any(), any(), eq("MY_TABLE_INGEST"), any())).thenReturn(rsIngest);
+        mockStatementForColumns(processor, List.of("COL1", "COL2", "COL3"));
 
         processor.ensureColumnsForTable("MY_TABLE");
 
@@ -121,6 +124,14 @@ class AbstractProcessorInformationSchemaTest {
         processor.ignoreColumns = new ArrayList<>();
         processor.excludeIngestAdditionalFields = List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
         return processor;
+    }
+
+    private Statement mockStatementForColumns(CdcDbzSchemaProcessor processor, List<String> columns) throws Exception {
+        var stmtMock = mock(Statement.class);
+        var rsMock = buildResultSet(columns);
+        when(processor.connection.createStatement()).thenReturn(stmtMock);
+        when(stmtMock.executeQuery(any())).thenReturn(rsMock);
+        return stmtMock;
     }
 
     private ResultSet buildResultSet(List<String> columns) throws Exception {

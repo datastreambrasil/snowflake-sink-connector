@@ -129,13 +129,13 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             var tableBaseName = entry.getKey();
             var tableBuffer = entry.getValue();
             if (!tableBuffer.isEmpty()) {
-                flushTable(tableBaseName, tableBuffer);
+                flushTable(tableBaseName, processMultiTables ? tableBaseName : stageName, tableBuffer);
             }
             buffer.remove(tableBaseName);
         }
     }
 
-    private void flushTable(String tableBaseName, CompressedMap<SnowflakeRecord> tableBuffer) {
+    private void flushTable(String tableBaseName, String stageName, CompressedMap<SnowflakeRecord> tableBuffer) {
         var startTime = System.currentTimeMillis();
         var totalBuffer = tableBuffer.size();
         var ingestTableName = tableBaseName + INGEST_SUFFIX;
@@ -144,7 +144,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         try {
             LOGGER.debug("Preparing to send {} records from buffer. To stage {} and table {}",
-                    tableBuffer.size(), tableBaseName, tableBaseName);
+                    tableBuffer.size(), stageName, tableBaseName);
 
             ensureColumnsForTable(tableBaseName);
             var ingestCols = columnsIngestTable.get(tableBaseName);
@@ -156,16 +156,17 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
             try (var inputStream = Files.newInputStream(tmpFilePathToInsert)) {
                 var startTimeUpload = System.currentTimeMillis();
-                snowflakeConnection.uploadStream(tableBaseName, "/", inputStream, destFileName, true);
+                snowflakeConnection.uploadStream(stageName, FILE_SEPARATOR, inputStream, destFileName, true);
                 var endTimeUpload = System.currentTimeMillis();
                 LOGGER.debug("Uploaded {} records in {} ms", tableBuffer.size(), endTimeUpload - startTimeUpload);
 
                 var startTimeStatement = System.currentTimeMillis();
                 try (var stmt = connection.createStatement()) {
-
                     String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName,
-                            String.join(",", ingestCols), tableBaseName, destFileName);
+                            String.join(LINE_SEPARATOR_COMMA, ingestCols), stageName, destFileName);
+
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
+
                     stmt.executeLargeUpdate(copyInto);
 
                     this.discardData(tmpFilePathToInsert);
@@ -314,7 +315,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 .reduce((a, b) -> String.format("%s and %s", a, b)).orElseThrow();
     }
 
-    protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable, CompressedMap<SnowflakeRecord> tableBuffer, String tableBaseName) throws Throwable {
+    protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable,
+                                                           CompressedMap<SnowflakeRecord> tableBuffer, String tableBaseName) throws Throwable {
         var startTime = System.currentTimeMillis();
         var stringBuilder = new StringBuilder(tableBuffer.size() * SB_CSV_INITIAL_SIZE);
 
@@ -411,9 +413,9 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     }
 
     private Path generateTempFile(StringBuilder stringBuilder, long startTime, String tableBaseName) throws IOException {
-        Files.createDirectories(Path.of(String.format("%s/%s", tmpDataFolder, tableBaseName)));
+        Files.createDirectories(Path.of(String.format("%s/%s/%s", tmpDataFolder, schemaName, tableBaseName)));
 
-        var tmpPath = Path.of(String.format("%s/%s/%s.csv", tmpDataFolder, tableBaseName, UUID.randomUUID()));
+        var tmpPath = Path.of(String.format("%s/%s/%s/%s.csv", tmpDataFolder, schemaName, tableBaseName, UUID.randomUUID()));
         Files.deleteIfExists(tmpPath);
 
         var resultPath = Files.writeString(tmpPath, stringBuilder.toString(), StandardOpenOption.CREATE);
