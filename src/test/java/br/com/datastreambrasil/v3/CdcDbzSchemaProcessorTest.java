@@ -126,6 +126,7 @@ class CdcDbzSchemaProcessorTest {
         var processor = new CdcDbzSchemaProcessor();
         processor.tableName = "default_table";
         processor.bufferInitialCapacity = 10;
+        processor.processMultiTables = true;
         var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
 
         // Records with dot-separated topics — table name extracted from last segment

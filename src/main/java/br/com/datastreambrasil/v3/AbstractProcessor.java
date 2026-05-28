@@ -156,7 +156,7 @@ public abstract class AbstractProcessor {
      * Falls back to the configured tableName when the topic has no dot separator.
      */
     protected String extractTableNameFromTopic(String topic) {
-        if (topic != null && topic.contains(".")) {
+        if (topic != null && topic.contains(".") && processMultiTables) {
             return topic.substring(topic.lastIndexOf(".") + 1);
         }
         return tableName;

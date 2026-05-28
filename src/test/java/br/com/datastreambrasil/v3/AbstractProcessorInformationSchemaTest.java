@@ -135,6 +135,7 @@ class AbstractProcessorInformationSchemaTest {
     @Test
     void testExtractTableNameFromTopicWithDot() {
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        processor.processMultiTables = true;
         assertEquals("tabelaX", processor.extractTableNameFromTopic("compras.loja-b.tabelaX"));
         assertEquals("tabelaZ", processor.extractTableNameFromTopic("compras.loja-c.tabelaZ"));
     }
@@ -144,6 +145,14 @@ class AbstractProcessorInformationSchemaTest {
         var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
         assertEquals("MY_TABLE", processor.extractTableNameFromTopic("no_dot_topic"));
         assertEquals("MY_TABLE", processor.extractTableNameFromTopic(null));
+    }
+
+    @Test
+    void testExtractTableNameFromTopicWithDotButSingleTableMode() {
+        var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        processor.processMultiTables = false;
+        assertEquals("MY_TABLE", processor.extractTableNameFromTopic("compras.loja-b.tabelaX"),
+                "Single-table mode must ignore topic and always use tableName");
     }
 
     private CdcDbzSchemaProcessor createProcessor(String schemaName, String tableBaseName) {

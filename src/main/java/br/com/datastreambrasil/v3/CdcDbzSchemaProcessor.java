@@ -71,9 +71,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 throw new InvalidStructException("Invalid record structure or schema");
             }
 
-            String tableBaseName = extractTableNameFromTopic(record.topic());
-            List<String> tablePks = extractPK(record, tableBaseName);
-
             var fieldOP = record.valueSchema().field(OP);
             if (fieldOP == null) {
                 LOGGER.error("Field '{}' not found in value schema for record: {}", OP, record);
@@ -92,6 +89,9 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                         record.topic(), valueOP, mustProcessReadOnlyMessages);
                 continue;
             }
+
+            String tableBaseName = extractTableNameFromTopic(record.topic());
+            List<String> tablePks = extractPK(record, tableBaseName);
 
             var recordToSnowflake = new SnowflakeRecord(
                     this.prepareEvent(debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER)),
