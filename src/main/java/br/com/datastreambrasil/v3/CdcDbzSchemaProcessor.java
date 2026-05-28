@@ -87,6 +87,12 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 throw new InvalidStructException("Value for field '" + OP + "' is null");
             }
 
+            if (debeziumOperation.r.toString().equalsIgnoreCase(valueOP) && !mustProcessReadOnlyMessages) {
+                LOGGER.debug("Read message of topic: {}, discarded. Type: {}, parameter mustProcessReadOnlyMessages: {}",
+                        record.topic(), valueOP, mustProcessReadOnlyMessages);
+                continue;
+            }
+
             var recordToSnowflake = new SnowflakeRecord(
                     this.prepareEvent(debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER)),
                     record.topic(),

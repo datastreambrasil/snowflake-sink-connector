@@ -45,6 +45,7 @@ public abstract class AbstractProcessor {
     protected String tmpDataFolder;
     protected boolean processMultiTables;
     protected boolean findInColumnsMetadata;
+    protected boolean mustProcessReadOnlyMessages;
 
     protected static final String AFTER = "after";
     protected static final String BEFORE = "before";
@@ -120,6 +121,7 @@ public abstract class AbstractProcessor {
         bufferInitialCapacity = config.getInt(SnowflakeSinkConnector.CFG_BUFFER_INITIAL_CAPACITY);
         processMultiTables = config.getBoolean(SnowflakeSinkConnector.CFG_PROCESS_MULTIPLE_TABLES);
         findInColumnsMetadata = config.getBoolean(SnowflakeSinkConnector.CFG_FIND_COLUMNS_IN_METADATA);
+        mustProcessReadOnlyMessages = config.getBoolean(SnowflakeSinkConnector.CFG_MUST_PROCESS_READ_ONLY_MESSAGES);
     }
 
     protected void setupSnowflakeConnection(AbstractConfig config) {

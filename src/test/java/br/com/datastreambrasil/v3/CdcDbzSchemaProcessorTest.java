@@ -151,6 +151,50 @@ class CdcDbzSchemaProcessorTest {
     }
 
     @Test
+    void testPutSuccess_ReadMessageDiscardedWhenMustProcessReadOnlyMessagesFalse() {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.tableName = "test_table";
+        processor.bufferInitialCapacity = 10;
+        processor.mustProcessReadOnlyMessages = false;
+        var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
+        processor.put(generateReadEvents(dt, "1", "2", "3"));
+
+        assertTrue(processor.buffer.isEmpty(), "Buffer should be empty when all records are 'r' and mustProcessReadOnlyMessages=false");
+    }
+
+    @Test
+    void testPutSuccess_ReadMessageDiscardedMixedWithOtherOps() {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.tableName = "test_table";
+        processor.bufferInitialCapacity = 10;
+        processor.mustProcessReadOnlyMessages = false;
+        var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
+        processor.put(generateReadEvents(dt, "1", "2"));
+        processor.put(generateCreateEvents(dt, "3"));
+
+        var tableBuffer = processor.buffer.get("test_table");
+        assertNotNull(tableBuffer, "Buffer should contain create events");
+        assertEquals(1, tableBuffer.size(), "Only create event should be in buffer; read events must be discarded");
+        assertEquals("c", tableBuffer.get("3").op());
+    }
+
+    @Test
+    void testPutSuccess_ReadMessageProcessedWhenMustProcessReadOnlyMessagesTrue() {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.tableName = "test_table";
+        processor.bufferInitialCapacity = 10;
+        processor.mustProcessReadOnlyMessages = true;
+        var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
+        processor.put(generateReadEvents(dt, "1", "2"));
+
+        var tableBuffer = processor.buffer.get("test_table");
+        assertNotNull(tableBuffer, "Buffer should contain read events when mustProcessReadOnlyMessages=true");
+        assertEquals(2, tableBuffer.size());
+        assertEquals("r", tableBuffer.get("1").op());
+        assertEquals("r", tableBuffer.get("2").op());
+    }
+
+    @Test
     void testPutFailWithInvalidValueSchema() {
         var processor = new CdcDbzSchemaProcessor();
         assertThrows(InvalidStructException.class, () -> processor.put(List.of(new SinkRecord(
@@ -510,6 +554,30 @@ class CdcDbzSchemaProcessorTest {
             ));
         }
 
+        return records;
+    }
+
+    private Collection<SinkRecord> generateReadEvents(LocalDateTime dt, String... ids) {
+        var records = new ArrayList<SinkRecord>();
+        for (int i = 0; i < ids.length; i++) {
+            var id = ids[i];
+            records.add(new SinkRecord(
+                    "test_topic",
+                    0,
+                    keySchema,
+                    new Struct(keySchema).put("id", id),
+                    valueSchema,
+                    new Struct(valueSchema)
+                            .put("after", new Struct(valueAfterBeforeSchema)
+                                    .put("Id", id)
+                                    .put("Name", "Name " + id)
+                                    .put("timestamp", dt.toInstant(ZoneOffset.UTC).toEpochMilli())
+                                    .put("time", dt.getLong(ChronoField.NANO_OF_DAY))
+                                    .put("date", (int) dt.getLong(ChronoField.EPOCH_DAY)))
+                            .put("op", CdcDbzSchemaProcessor.debeziumOperation.r.name()),
+                    i
+            ));
+        }
         return records;
     }
 
