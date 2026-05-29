@@ -46,6 +46,20 @@ import java.util.UUID;
  */
 public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
+    private static final String INGEST_TABLE_NAME_MASK = "%s%s";
+
+    private static final String MERGE_QUERY = """
+            MERGE INTO %s AS final USING (SELECT * EXCLUDE (%s) FROM %s
+            WHERE ih_blockid = '%s'
+            and ih_op in ('c', 'r', 'u')) AS ingest ON %s
+            WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)
+            WHEN MATCHED THEN UPDATE SET %s""";
+
+    private static final String COPY_QUERY = "COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE";
+    private static final String DELETE_QUERY = """
+            DELETE FROM %s as final USING (SELECT %s FROM %s WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest
+            WHERE %s""";
+
     private Scheduler scheduler;
     private Map<String, List<String>> pksByTable = new HashMap<>();
     private boolean flushHasDeletedRecords;
@@ -66,7 +80,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     protected void put(Collection<SinkRecord> collection) {
         LOGGER.debug("PUT - Total number of records to be stored in the buffer: {}", collection.size());
         for (SinkRecord record : collection) {
-
             if (!validate(record)) {
                 throw new InvalidStructException("Invalid record structure or schema");
             }
@@ -90,7 +103,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 continue;
             }
 
-            String tableBaseName = extractTableNameFromTopic(record.topic());
+            String tableBaseName = extractTableName(record.topic());
             List<String> tablePks = extractPK(record, tableBaseName);
 
             var recordToSnowflake = new SnowflakeRecord(
@@ -144,7 +157,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     private void flushTable(String tableBaseName, String stageName, CompressedMap<SnowflakeRecord> tableBuffer) {
         var startTime = System.currentTimeMillis();
         var totalBuffer = tableBuffer.size();
-        var ingestTableName = tableBaseName + INGEST_SUFFIX;
+        var ingestTableName = String.format(INGEST_TABLE_NAME_MASK, tableBaseName, INGEST_SUFFIX);
         var destFileName = UUID.randomUUID().toString();
         Path tmpFilePathToInsert = null;
 
@@ -157,11 +170,9 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     throw new RuntimeException("No pre-loaded columns for table: " + tableBaseName +
                             ". Verify the _INGEST table exists in schema " + schemaName);
                 }
-            } else {
-                ensureColumnsForTable(tableBaseName);
             }
 
-            var ingestCols = columnsIngestTable.get(tableBaseName.toUpperCase());
+            var ingestCols = columnsIngestTable.get(ingestTableName.toUpperCase());
             var finalCols = columnsFinalTable.get(tableBaseName.toUpperCase());
             var tablePks = pksByTable.get(tableBaseName);
             var blockID = UUID.randomUUID().toString();
@@ -176,7 +187,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
                 var startTimeStatement = System.currentTimeMillis();
                 try (var stmt = connection.createStatement()) {
-                    String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName,
+                    String copyInto = String.format(COPY_QUERY, ingestTableName,
                             String.join(LINE_SEPARATOR_COMMA, ingestCols), stageName, destFileName);
 
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
@@ -186,22 +197,18 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     this.discardData(tmpFilePathToInsert);
 
                     if (flushHasInsertedRecords || flushHasUpdatedRecords) {
-                        String merge = String.format("MERGE INTO %s AS final USING (SELECT * EXCLUDE (%s) FROM %s WHERE ih_blockid = '%s' and ih_op in ('c', 'r', 'u')) AS ingest ON %s " +
-                                        "WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s) " +
-                                        "WHEN MATCHED THEN UPDATE SET %s",
-                                tableBaseName, buildExcludeColumns(), ingestTableName, blockID,
-                                buildPkWhereClause(tablePks), String.join(",", finalCols),
-                                String.join(",", finalCols.stream().map(c -> "ingest." + c).toList()),
+                        String merge = String.format(MERGE_QUERY, tableBaseName, buildExcludeColumns(), ingestTableName,
+                                blockID, buildPkWhereClause(tablePks), String.join(LINE_SEPARATOR_COMMA, finalCols),
+                                String.join(LINE_SEPARATOR_COMMA, finalCols.stream().map(c -> String.format("ingest.%s", c)).toList()),
                                 buildUpdateColumns(finalCols));
                         LOGGER.debug("Merging statement to final table: {}", merge);
                         stmt.executeLargeUpdate(merge);
                     }
 
                     if (flushHasDeletedRecords) {
-                        String deleteFromFinalTable = String.format(
-                                "DELETE FROM %s as final USING (SELECT %s FROM %s WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest WHERE %s",
-                                tableBaseName, String.join(",", tablePks), ingestTableName, blockID,
-                                buildPkWhereClause(tablePks));
+                        String deleteFromFinalTable = String.format(DELETE_QUERY, tableBaseName,
+                                String.join(",", tablePks), ingestTableName,
+                                blockID, buildPkWhereClause(tablePks));
                         LOGGER.debug("Deleting statement from final table: {}", deleteFromFinalTable);
                         stmt.executeLargeUpdate(deleteFromFinalTable);
                     }
@@ -255,7 +262,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     }
 
     protected void startCleanUpJob(AbstractConfig config) throws SchedulerException {
-
         var disableCleanUpJob = config.getBoolean(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DISABLE);
 
         if (disableCleanUpJob) {
@@ -276,12 +282,15 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         var schedulerFactory = new StdSchedulerFactory(props);
         scheduler = schedulerFactory.getScheduler();
+
         var job = JobBuilder.newJob(CleanupJob.class).withIdentity("cleanupjob")
                 .setJobData(new JobDataMap(jobData))
                 .build();
+
         var trigger = TriggerBuilder.newTrigger().withIdentity("trigger_cleanupjob")
                 .withSchedule(SimpleScheduleBuilder.repeatSecondlyForever((int) durationCleanup.getSeconds()))
                 .build();
+
         scheduler.scheduleJob(job, trigger);
         scheduler.start();
     }

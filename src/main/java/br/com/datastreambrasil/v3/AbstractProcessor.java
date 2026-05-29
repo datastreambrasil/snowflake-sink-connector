@@ -100,9 +100,13 @@ public abstract class AbstractProcessor {
     protected void start(AbstractConfig config) {
         configParameters(config);
         setupSnowflakeConnection(config);
+
         if (processMultiTables) {
-            preloadAllIngestTableColumns();
+            preloadAllTableColumns();
+        } else {
+            knownIngestTables.add(String.format("%s%s", tableName, INGEST_SUFFIX));
         }
+
         extraConfigsOnStart(config);
     }
 
@@ -151,47 +155,15 @@ public abstract class AbstractProcessor {
         }
     }
 
-    /**
-     * Returns the table name extracted from the topic (value after the last dot).
-     * Falls back to the configured tableName when the topic has no dot separator.
-     */
-    protected String extractTableNameFromTopic(String topic) {
+    protected String extractTableName(String topic) {
         if (topic != null && topic.contains(".") && processMultiTables) {
             return topic.substring(topic.lastIndexOf(".") + 1);
         }
         return tableName;
     }
 
-    /**
-     * Lazily loads and caches column metadata for a table using the JDBC metadata API.
-     * No-op if columns for the table are already cached.
-     */
-    protected void ensureColumnsForTable(String tableBaseName) {
-        if (columnsIngestTable.containsKey(tableBaseName.toUpperCase())) {
-            return;
-        }
-
-        try {
-            String ingestTable = tableBaseName + INGEST_SUFFIX;
-            List<String> ingestCols = findInColumnsMetadata
-                    ? getColumnsFromMetadata(ingestTable)
-                    : getColumnsFromMetadataInformationSchema(ingestTable);
-
-            List<String> finalCols = ingestCols.stream()
-                    .filter(col -> excludeIngestAdditionalFields.stream()
-                            .noneMatch(excluded -> excluded.equalsIgnoreCase(col)))
-                    .toList();
-
-            columnsIngestTable.put(tableBaseName.toUpperCase(), ingestCols);
-            columnsFinalTable.put(tableBaseName.toUpperCase(), finalCols);
-        } catch (SQLException e) {
-            LOGGER.error("Error while loading metadata columns for table {}", tableBaseName, e);
-            throw new RuntimeException("Error while loading metadata columns for table " + tableBaseName, e);
-        }
-    }
-
     // Package-private for testability
-    void preloadAllIngestTableColumns() {
+    void preloadAllTableColumns() {
         String sql = String.format(FIND_ALL_INGEST_TABLE_COLUMNS, schemaName.toUpperCase());
         Map<String, List<String>> rawByIngestTable = new HashMap<>();
 
@@ -206,8 +178,7 @@ public abstract class AbstractProcessor {
         }
 
         if (rawByIngestTable.isEmpty()) {
-            LOGGER.warn("No _INGEST tables found in schema {} during pre-load", schemaName);
-            return;
+            throw new RuntimeException("No _INGEST tables found in schema: " + schemaName + " during pre-load");
         }
 
         for (var entry : rawByIngestTable.entrySet()) {
@@ -222,9 +193,14 @@ public abstract class AbstractProcessor {
                             .noneMatch(excluded -> excluded.equalsIgnoreCase(col)))
                     .toList();
 
-            columnsIngestTable.put(baseTableName, ingestCols);
+            columnsIngestTable.put(ingestTableName, ingestCols);
             columnsFinalTable.put(baseTableName, finalCols);
-            LOGGER.debug("Pre-loaded {} columns for table: {}", ingestCols.size(), baseTableName);
+            knownIngestTables.add(ingestTableName);
+
+            LOGGER.debug("Pre-loaded {} columns for ingest table: {} - Columns names: {}",
+                    ingestCols.size(), ingestTableName, ingestCols);
+            LOGGER.debug("Pre-loaded {} columns from ingest table: {} for final table: {} - Columns names: {}",
+                    finalCols.size(), ingestTableName, baseTableName, finalCols);
         }
 
         LOGGER.info("Pre-loaded columns for {} ingest tables in schema {}", rawByIngestTable.size(), schemaName);
