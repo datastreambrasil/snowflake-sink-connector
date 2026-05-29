@@ -77,12 +77,6 @@ public abstract class AbstractProcessor {
     private static final String CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX = "CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX";
     private static final String JDBC_QUERY_RESULT_FORMAT = "JDBC_QUERY_RESULT_FORMAT";
 
-    private static final String FIND_COLUMNS = """
-        SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'
-        ORDER BY ORDINAL_POSITION
-        """;
-
     private static final String FIND_ALL_INGEST_TABLE_COLUMNS = """
         SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME LIKE '%%_INGEST'
@@ -101,10 +95,10 @@ public abstract class AbstractProcessor {
         configParameters(config);
         setupSnowflakeConnection(config);
 
-        if (processMultiTables) {
-            preloadAllTableColumns();
+        if (findInColumnsMetadata && !processMultiTables) {
+            prepareColumnsFromMetadata(tableName, config);
         } else {
-            knownIngestTables.add(String.format("%s%s", tableName, INGEST_SUFFIX));
+            preloadAllTableColumns();
         }
 
         extraConfigsOnStart(config);
@@ -162,7 +156,6 @@ public abstract class AbstractProcessor {
         return tableName;
     }
 
-    // Package-private for testability
     void preloadAllTableColumns() {
         String sql = String.format(FIND_ALL_INGEST_TABLE_COLUMNS, schemaName.toUpperCase());
         Map<String, List<String>> rawByIngestTable = new HashMap<>();
@@ -213,46 +206,36 @@ public abstract class AbstractProcessor {
         });
     }
 
-    protected List<String> getColumnsFromMetadata(String table) throws SQLException {
-        var metadata = connection.getMetaData();
+    protected void prepareColumnsFromMetadata(String table, AbstractConfig config) {
+        try {
+            var metadata = connection.getMetaData();
 
-        var columnsFromTable = new ArrayList<String>();
-        try (var rsColumns = metadata.getColumns(null, schemaName.toUpperCase(), table.toUpperCase(), null)) {
-            while (rsColumns.next()) {
-                columnsFromTable.add(rsColumns.getString("COLUMN_NAME"));
+            var columnsFromTable = new ArrayList<String>();
+            try (var rsColumns = metadata.getColumns(null, schemaName.toUpperCase(), table.toUpperCase(), null)) {
+                while (rsColumns.next()) {
+                    columnsFromTable.add(rsColumns.getString("COLUMN_NAME"));
+                }
             }
-        }
-        if (columnsFromTable.isEmpty()) {
-            throw new RuntimeException(
-                "Empty columns returned from target table " + table + ", schema " + schemaName);
-        }
-
-        columnsFromTable.removeAll(ignoreColumns);
-        var columnsNoDuplicate = columnsFromTable.stream().distinct().toList();
-
-        LOGGER.debug("Columns: {} mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsNoDuplicate), table);
-
-        return columnsNoDuplicate;
-    }
-
-    private List<String> getColumnsFromMetadataInformationSchema(String table) throws SQLException {
-        var columnsFromTable = new ArrayList<String>();
-        String sql = String.format(FIND_COLUMNS, schemaName.toUpperCase(), table.toUpperCase());
-        try (var stmt = connection.createStatement(); var rs = stmt.executeQuery(sql)) {
-            while (rs.next()) {
-                columnsFromTable.add(rs.getString("COLUMN_NAME"));
-            }
-        }
-
-        if (columnsFromTable.isEmpty()) {
-            throw new RuntimeException(
+            if (columnsFromTable.isEmpty()) {
+                throw new RuntimeException(
                     "Empty columns returned from target table " + table + ", schema " + schemaName);
+            }
+
+            columnsFromTable.removeAll(ignoreColumns);
+            var columnsNoDuplicate = columnsFromTable.stream().distinct().toList();
+
+            LOGGER.debug("Columns: {} mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsNoDuplicate), table);
+
+            var ingestTableName = String.format("%s%s", table, INGEST_SUFFIX);
+            var columnsFromIngestTable = new ArrayList<String>();
+            columnsFromIngestTable.addAll(columnsFromTable);
+            columnsFromIngestTable.addAll(config.getList(SnowflakeSinkConnector.CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS));
+
+            columnsIngestTable.put(ingestTableName, columnsFromIngestTable);
+            knownIngestTables.add(ingestTableName);
+            columnsFinalTable.put(table, columnsFromTable);
+        } catch (SQLException e) {
+            throw new RuntimeException("Error pre-loading ingest table columns for schema " + schemaName, e);
         }
-
-        columnsFromTable.removeAll(ignoreColumns);
-
-        LOGGER.debug("Columns: {} mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsFromTable), table);
-
-        return columnsFromTable;
     }
 }
