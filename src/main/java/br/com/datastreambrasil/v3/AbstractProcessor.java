@@ -96,7 +96,7 @@ public abstract class AbstractProcessor {
         setupSnowflakeConnection(config);
 
         if (findInColumnsMetadata && !processMultiTables) {
-            prepareColumnsFromMetadata(tableName, config);
+            prepareColumnsFromMetadata(tableName.toUpperCase(), config);
         } else {
             preloadAllTableColumns();
         }
@@ -138,7 +138,7 @@ public abstract class AbstractProcessor {
                 // Resolve ExceptionInInitializerError com sun.misc.Unsafe no Java 17+
                 // Ref: https://docs.snowflake.com/en/developer-guide/jdbc/jdbc-configure
                 properties.put(JDBC_QUERY_RESULT_FORMAT, "JSON");
-                LOGGER.warn("Find columns by information_schema query to schema: {}", schemaName);
+                LOGGER.warn("Find columns by information_schema.columns query to schema: {}", schemaName);
             }
 
             connection = DriverManager.getConnection(config.getString(SnowflakeSinkConnector.CFG_URL), properties);
@@ -206,16 +206,17 @@ public abstract class AbstractProcessor {
         });
     }
 
-    protected void prepareColumnsFromMetadata(String table, AbstractConfig config) {
+    void prepareColumnsFromMetadata(String table, AbstractConfig config) {
         try {
             var metadata = connection.getMetaData();
 
             var columnsFromTable = new ArrayList<String>();
-            try (var rsColumns = metadata.getColumns(null, schemaName.toUpperCase(), table.toUpperCase(), null)) {
+            try (var rsColumns = metadata.getColumns(null, schemaName.toUpperCase(), table, null)) {
                 while (rsColumns.next()) {
                     columnsFromTable.add(rsColumns.getString("COLUMN_NAME"));
                 }
             }
+
             if (columnsFromTable.isEmpty()) {
                 throw new RuntimeException(
                     "Empty columns returned from target table " + table + ", schema " + schemaName);
@@ -224,7 +225,8 @@ public abstract class AbstractProcessor {
             columnsFromTable.removeAll(ignoreColumns);
             var columnsNoDuplicate = columnsFromTable.stream().distinct().toList();
 
-            LOGGER.debug("Columns: {} mapped from target table: {}", String.join(LINE_SEPARATOR_COMMA, columnsNoDuplicate), table);
+            LOGGER.debug("Columns: {} mapped from target table: {}",
+                    String.join(LINE_SEPARATOR_COMMA, columnsNoDuplicate), table);
 
             var ingestTableName = String.format("%s%s", table, INGEST_SUFFIX);
             var columnsFromIngestTable = new ArrayList<String>();
