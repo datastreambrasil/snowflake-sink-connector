@@ -6,7 +6,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>br.com.datastreambrasil</groupId>
     <artifactId>snowflake-sink-connector</artifactId>
-    <version>3.10.0-rc.2</version>
+    <version>3.10.0-rc.3</version>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>

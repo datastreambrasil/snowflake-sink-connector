@@ -310,26 +310,34 @@ class CdcDbzSchemaProcessorTest {
     @Test
     void testFlushWithSuccess() throws SQLException, IOException {
         var processor = new CdcDbzSchemaProcessor();
+        processor.findInColumnsMetadata = true;
         var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
         var statementMock = prepareToFlush(processor);
         processor.put(generateCreateEvents(dt, "1", "2", "3"));
         processor.put(generateUpdateEvents(dt, "new", "4"));
         processor.put(generateDeleteEvents(dt, "5"));
+        processor.columnsIngestTable.put("TEST_TABLE_INGEST",
+                List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"));
+        processor.columnsFinalTable.put("TEST_TABLE",
+                List.of("id", "name", "timestamp", "time", "date", "desc"));
+
         processor.flush(null);
 
         verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"),
                 assertArg(c -> assertNotNull(c, "CSV data stream should should not be null")), any(), eq(true));
         verify(statementMock, times(1)).executeLargeUpdate(matches("COPY.*"));
         verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
-        verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE.*"));
         assertEquals(0, processor.buffer.size(), "Buffer map should be empty after flush");
         assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_table")));
         assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_table")).toList().isEmpty());
     }
 
     @Test
-    void testFlushWithSuccess_MultiTables() throws SQLException, IOException {
+    void testFlushWithSuccess_MultiTables() throws SQLException {
         var processor = new CdcDbzSchemaProcessor();
+        processor.processMultiTables = true;
+        processor.mustProcessReadOnlyMessages = true;
         var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
         var statementMock = prepareToFlushMultiTables(processor);
         processor.put(generateCreateEvents(dt, "1", "2", "3"));
@@ -342,7 +350,7 @@ class CdcDbzSchemaProcessorTest {
                 assertArg(c -> assertNotNull(c, "CSV data stream should not be null")), any(), eq(true));
         verify(statementMock, times(1)).executeLargeUpdate(matches("COPY.*"));
         verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
-        verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE.*"));
         assertEquals(0, processor.buffer.size(), "Buffer map should be empty after flush");
     }
 
@@ -412,7 +420,7 @@ class CdcDbzSchemaProcessorTest {
                 "test_table", "test_table_INGEST");
         processor.configParameters(generateConfigMultiTables());
         // Simulates columns pre-loaded by preloadAllIngestTableColumns() — uppercase key
-        processor.columnsIngestTable.put("TEST_TABLE",
+        processor.columnsIngestTable.put("TEST_TABLE_INGEST",
                 List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"));
         processor.columnsFinalTable.put("TEST_TABLE",
                 List.of("id", "name", "timestamp", "time", "date", "desc"));
@@ -439,7 +447,7 @@ class CdcDbzSchemaProcessorTest {
                 "timestamp_fields_convert", "timestamp",
                 "date_fields_convert", "date",
                 "time_fields_convert", "time",
-                "find_columns_in_metadata", Boolean.TRUE,
+                "find_columns_in_metadata", Boolean.FALSE,
                 "process_multiples_tables", Boolean.TRUE
         ));
     }

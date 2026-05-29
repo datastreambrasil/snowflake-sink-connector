@@ -57,8 +57,10 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     private static final String COPY_QUERY = "COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE";
     private static final String DELETE_QUERY = """
-            DELETE FROM %s as final USING (SELECT %s FROM %s WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest
-            WHERE %s""";
+            DELETE FROM %s as final USING (SELECT %s FROM %s
+            WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest
+            WHERE %s
+            """;
 
     private Scheduler scheduler;
     private Map<String, List<String>> pksByTable = new HashMap<>();
@@ -157,7 +159,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     private void flushTable(String tableBaseName, String stageName, CompressedMap<SnowflakeRecord> tableBuffer) {
         var startTime = System.currentTimeMillis();
         var totalBuffer = tableBuffer.size();
-        var ingestTableName = String.format(INGEST_TABLE_NAME_MASK, tableBaseName, INGEST_SUFFIX);
+        var ingestTableName = String.format(INGEST_TABLE_NAME_MASK, tableBaseName, INGEST_SUFFIX).toUpperCase();
         var destFileName = UUID.randomUUID().toString();
         Path tmpFilePathToInsert = null;
 
@@ -166,13 +168,13 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     tableBuffer.size(), stageName, tableBaseName);
 
             if (processMultiTables) {
-                if (!columnsIngestTable.containsKey(tableBaseName.toUpperCase())) {
-                    throw new RuntimeException("No pre-loaded columns for table: " + tableBaseName +
+                if (!columnsIngestTable.containsKey(ingestTableName)) {
+                    throw new RuntimeException("No pre-loaded columns for table: " + ingestTableName +
                             ". Verify the _INGEST table exists in schema " + schemaName);
                 }
             }
 
-            var ingestCols = columnsIngestTable.get(ingestTableName.toUpperCase());
+            var ingestCols = columnsIngestTable.get(ingestTableName);
             var finalCols = columnsFinalTable.get(tableBaseName.toUpperCase());
             var tablePks = pksByTable.get(tableBaseName);
             var blockID = UUID.randomUUID().toString();
