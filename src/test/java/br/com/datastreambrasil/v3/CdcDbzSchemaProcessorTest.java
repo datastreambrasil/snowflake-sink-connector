@@ -1,7 +1,5 @@
 package br.com.datastreambrasil.v3;
 
-import br.com.datastreambrasil.v3.compress.CompressedMap;
-import br.com.datastreambrasil.v3.compress.KryoFactory;
 import br.com.datastreambrasil.v3.exception.InvalidStructException;
 import net.snowflake.client.jdbc.SnowflakeConnection;
 import net.snowflake.client.jdbc.internal.apache.commons.io.IOUtils;
@@ -79,45 +77,122 @@ class CdcDbzSchemaProcessorTest {
     @Test
     void testPutSuccess() {
         var processor = new CdcDbzSchemaProcessor();
-        processor.buffer = new CompressedMap<>(new KryoFactory(), 10);
+        processor.tableName = "test_table";
+        processor.bufferInitialCapacity = 10;
         var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
         processor.put(generateCreateEvents(dt, "1", "2", "3"));
         processor.put(generateUpdateEvents(dt, "update 001", "10"));//this update should be ignored, because it will be overridden by the next update event
         processor.put(generateUpdateEvents(dt, "update 002", "10"));
         processor.put(generateDeleteEvents(dt, "20"));
         processor.put(generateDeleteEvents(dt, "3")); //this delete will override the create event for id 3
-        assertEquals(5, processor.buffer.size());
+
+        var tableBuffer = processor.buffer.get("test_table");
+        assertEquals(5, tableBuffer.size());
 
         var itemIdx = "1";
         //assert item create
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals("Name " + itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("c", processor.buffer.get(itemIdx).op());
+        assertEquals("c", tableBuffer.get(itemIdx).op());
 
         //assert item update
         itemIdx = "10";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name update 002 " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals("Name update 002 " + itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("u", processor.buffer.get(itemIdx).op());
+        assertEquals("u", tableBuffer.get(itemIdx).op());
 
         //asert item delete
         itemIdx = "20";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals("Name " + itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("d", processor.buffer.get(itemIdx).op());
+        assertEquals("d", tableBuffer.get(itemIdx).op());
 
         itemIdx = "3";
-        assertEquals(itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name " + itemIdx, processor.buffer.get(itemIdx).event().stream()
+        assertEquals("Name " + itemIdx, tableBuffer.get(itemIdx).event().stream()
                 .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("d", processor.buffer.get(itemIdx).op());
+        assertEquals("d", tableBuffer.get(itemIdx).op());
+    }
+
+    @Test
+    void testPutSuccess_MultipleTopics() {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.tableName = "default_table";
+        processor.bufferInitialCapacity = 10;
+        processor.processMultiTables = true;
+        var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
+
+        // Records with dot-separated topics — table name extracted from last segment
+        processor.put(generateCreateEventsForTopic(dt, "compras.loja-b.tabelaX", "1", "2"));
+        processor.put(generateCreateEventsForTopic(dt, "compras.loja-c.tabelaZ", "3"));
+
+        assertTrue(processor.buffer.containsKey("tabelaX"), "Buffer should contain tabelaX");
+        assertTrue(processor.buffer.containsKey("tabelaZ"), "Buffer should contain tabelaZ");
+        assertEquals(2, processor.buffer.get("tabelaX").size());
+        assertEquals(1, processor.buffer.get("tabelaZ").size());
+    }
+
+    @Test
+    void testPutSuccess_TopicWithoutDotFallsBackToTableName() {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.tableName = "fallback_table";
+        processor.bufferInitialCapacity = 10;
+        var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
+
+        processor.put(generateCreateEventsForTopic(dt, "no_dot_topic", "1"));
+
+        assertTrue(processor.buffer.containsKey("fallback_table"), "Buffer should use tableName as fallback");
+    }
+
+    @Test
+    void testPutSuccess_ReadMessageDiscardedWhenMustProcessReadOnlyMessagesFalse() {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.tableName = "test_table";
+        processor.bufferInitialCapacity = 10;
+        processor.mustProcessReadOnlyMessages = false;
+        var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
+        processor.put(generateReadEvents(dt, "1", "2", "3"));
+
+        assertTrue(processor.buffer.isEmpty(), "Buffer should be empty when all records are 'r' and mustProcessReadOnlyMessages=false");
+    }
+
+    @Test
+    void testPutSuccess_ReadMessageDiscardedMixedWithOtherOps() {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.tableName = "test_table";
+        processor.bufferInitialCapacity = 10;
+        processor.mustProcessReadOnlyMessages = false;
+        var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
+        processor.put(generateReadEvents(dt, "1", "2"));
+        processor.put(generateCreateEvents(dt, "3"));
+
+        var tableBuffer = processor.buffer.get("test_table");
+        assertNotNull(tableBuffer, "Buffer should contain create events");
+        assertEquals(1, tableBuffer.size(), "Only create event should be in buffer; read events must be discarded");
+        assertEquals("c", tableBuffer.get("3").op());
+    }
+
+    @Test
+    void testPutSuccess_ReadMessageProcessedWhenMustProcessReadOnlyMessagesTrue() {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.tableName = "test_table";
+        processor.bufferInitialCapacity = 10;
+        processor.mustProcessReadOnlyMessages = true;
+        var dt = LocalDateTime.of(2025, 1, 20, 10, 30, 40);
+        processor.put(generateReadEvents(dt, "1", "2"));
+
+        var tableBuffer = processor.buffer.get("test_table");
+        assertNotNull(tableBuffer, "Buffer should contain read events when mustProcessReadOnlyMessages=true");
+        assertEquals(2, tableBuffer.size());
+        assertEquals("r", tableBuffer.get("1").op());
+        assertEquals("r", tableBuffer.get("2").op());
     }
 
     @Test
@@ -235,21 +310,61 @@ class CdcDbzSchemaProcessorTest {
     @Test
     void testFlushWithSuccess() throws SQLException, IOException {
         var processor = new CdcDbzSchemaProcessor();
+        processor.findInColumnsMetadata = true;
         var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
         var statementMock = prepareToFlush(processor);
         processor.put(generateCreateEvents(dt, "1", "2", "3"));
         processor.put(generateUpdateEvents(dt, "new", "4"));
         processor.put(generateDeleteEvents(dt, "5"));
+        processor.columnsIngestTable.put("TEST_TABLE_INGEST",
+                List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"));
+        processor.columnsFinalTable.put("TEST_TABLE",
+                List.of("id", "name", "timestamp", "time", "date", "desc"));
+
         processor.flush(null);
 
         verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"),
                 assertArg(c -> assertNotNull(c, "CSV data stream should should not be null")), any(), eq(true));
         verify(statementMock, times(1)).executeLargeUpdate(matches("COPY.*"));
         verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
-        verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
-        assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
-        assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_stage")));
-        assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList().isEmpty());
+        verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE.*"));
+        assertEquals(0, processor.buffer.size(), "Buffer map should be empty after flush");
+        assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_table")));
+        assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_table")).toList().isEmpty());
+    }
+
+    @Test
+    void testFlushWithSuccess_MultiTables() throws SQLException {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.processMultiTables = true;
+        processor.mustProcessReadOnlyMessages = true;
+        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
+        var statementMock = prepareToFlushMultiTables(processor);
+        processor.put(generateCreateEvents(dt, "1", "2", "3"));
+        processor.put(generateUpdateEvents(dt, "new", "4"));
+        processor.put(generateDeleteEvents(dt, "5"));
+        processor.flush(null);
+
+        // stageName = tableBaseName ("test_table") when processMultiTables = true
+        verify(processor.snowflakeConnection, times(1)).uploadStream(eq("test_table"), eq("/"),
+                assertArg(c -> assertNotNull(c, "CSV data stream should not be null")), any(), eq(true));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("COPY.*"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
+        verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE.*"));
+        assertEquals(0, processor.buffer.size(), "Buffer map should be empty after flush");
+    }
+
+    @Test
+    void testFlushThrowsWhenTableNotPreloaded() throws SQLException {
+        var processor = new CdcDbzSchemaProcessor();
+        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
+        mockConnections(processor,
+                List.of("id"), List.of("id", "ih_topic"), "test_table", "test_table_INGEST");
+        processor.configParameters(generateConfigMultiTables());
+        // columnsIngestTable intentionally not pre-populated
+        processor.put(generateCreateEvents(dt, "1"));
+
+        assertThrows(RuntimeException.class, () -> processor.flush(null));
     }
 
     @Test
@@ -260,14 +375,16 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateCreateEvents(dt, "1"));
         processor.put(generateDeleteEvents(dt, "2"));
         var blockID = "111";
+        var tableBuffer = processor.buffer.get("test_table");
         var csvBaos = processor.prepareOrderedColumnsBasedOnTargetTable(blockID,
-                List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME));
+                List.of("id", "name", "timestamp", "time", "date", "desc", IHTOPIC, IHOFFSET, IHPARTITION, IHOP, IHBLOCKID, IHDATETIME),
+                tableBuffer, "test_table");
         var pattern = Pattern.compile("""
                 "1","Name 1","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","c","111",(?<msgtimestampc>.*)
                 "2","Name 2","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",(?<msgtimestampd>.*)
                 """);
         var fileData = IOUtils.toString(Files.newInputStream(csvBaos), "UTF-8");
-        var files = Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList();
+        var files = Files.list(Path.of("/mnt/data/csv_data_to_stage/test_table")).toList();
         for (Path f : files) {
             Files.deleteIfExists(Path.of(f.toFile().getAbsolutePath()));
         }
@@ -277,7 +394,10 @@ class CdcDbzSchemaProcessorTest {
     @Test
     void testStartCleanUpJobSuccess() throws SchedulerException, SQLException {
         var processor = new CdcDbzSchemaProcessor();
+        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
         var statement = prepareToFlush(processor);
+        // put() registers "test_table_INGEST" in knownIngestTables via getOrCreateBuffer
+        processor.put(generateCreateEvents(dt, "1"));
         var props = generateConfig().originals();
         props.put(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DURATION, "PT1S");
         processor.startCleanUpJob(new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, props));
@@ -290,7 +410,20 @@ class CdcDbzSchemaProcessorTest {
                 List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"),
                 "test_table", "test_table_INGEST");
         processor.configParameters(generateConfig());
-        processor.configMetadata();
+        return statementMock;
+    }
+
+    private Statement prepareToFlushMultiTables(CdcDbzSchemaProcessor processor) throws SQLException {
+        var statementMock = mockConnections(processor,
+                List.of("id", "name", "timestamp", "time", "date", "desc"),
+                List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"),
+                "test_table", "test_table_INGEST");
+        processor.configParameters(generateConfigMultiTables());
+        // Simulates columns pre-loaded by preloadAllIngestTableColumns() — uppercase key
+        processor.columnsIngestTable.put("TEST_TABLE_INGEST",
+                List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"));
+        processor.columnsFinalTable.put("TEST_TABLE",
+                List.of("id", "name", "timestamp", "time", "date", "desc"));
         return statementMock;
     }
 
@@ -303,6 +436,19 @@ class CdcDbzSchemaProcessorTest {
                 "date_fields_convert", "date",
                 "time_fields_convert", "time",
                 "find_columns_in_metadata", Boolean.TRUE
+        ));
+    }
+
+    private AbstractConfig generateConfigMultiTables() {
+        return new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, Map.of(
+                "schema", "test_schema",
+                "table", "test_table",
+                "stage", "test_stage",
+                "timestamp_fields_convert", "timestamp",
+                "date_fields_convert", "date",
+                "time_fields_convert", "time",
+                "find_columns_in_metadata", Boolean.FALSE,
+                "process_multiples_tables", Boolean.TRUE
         ));
     }
 
@@ -359,12 +505,16 @@ class CdcDbzSchemaProcessorTest {
     }
 
     private Collection<SinkRecord> generateCreateEvents(LocalDateTime dt, String... ids) {
+        return generateCreateEventsForTopic(dt, "test_topic", ids);
+    }
+
+    private Collection<SinkRecord> generateCreateEventsForTopic(LocalDateTime dt, String topic, String... ids) {
         var records = new ArrayList<SinkRecord>();
 
         for (int i = 0; i < ids.length; i++) {
             var id = ids[i];
             records.add(new SinkRecord(
-                    "test_topic",
+                    topic,
                     0,
                     keySchema,
                     new Struct(keySchema).put("id", id),
@@ -413,6 +563,30 @@ class CdcDbzSchemaProcessorTest {
             ));
         }
 
+        return records;
+    }
+
+    private Collection<SinkRecord> generateReadEvents(LocalDateTime dt, String... ids) {
+        var records = new ArrayList<SinkRecord>();
+        for (int i = 0; i < ids.length; i++) {
+            var id = ids[i];
+            records.add(new SinkRecord(
+                    "test_topic",
+                    0,
+                    keySchema,
+                    new Struct(keySchema).put("id", id),
+                    valueSchema,
+                    new Struct(valueSchema)
+                            .put("after", new Struct(valueAfterBeforeSchema)
+                                    .put("Id", id)
+                                    .put("Name", "Name " + id)
+                                    .put("timestamp", dt.toInstant(ZoneOffset.UTC).toEpochMilli())
+                                    .put("time", dt.getLong(ChronoField.NANO_OF_DAY))
+                                    .put("date", (int) dt.getLong(ChronoField.EPOCH_DAY)))
+                            .put("op", CdcDbzSchemaProcessor.debeziumOperation.r.name()),
+                    i
+            ));
+        }
         return records;
     }
 

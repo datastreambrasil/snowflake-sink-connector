@@ -1,5 +1,6 @@
 package br.com.datastreambrasil.v3;
 
+import br.com.datastreambrasil.v3.compress.CompressedMap;
 import br.com.datastreambrasil.v3.exception.InvalidStructException;
 import br.com.datastreambrasil.v3.model.FieldRecord;
 import br.com.datastreambrasil.v3.model.SnowflakeRecord;
@@ -41,11 +42,28 @@ import java.util.UUID;
 /**
  * CdcDbzSchemaProcessor receives SinkRecords using Struct with Schema in CDC Debezium format.
  * This processor will process all operations (snapshot,insert, update, delete) and save on snowflake.
+ * Supports multiple tables per DB/schema: the table name is extracted from the topic (value after the last dot).
  */
 public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
+    private static final String INGEST_TABLE_NAME_MASK = "%s%s";
+
+    private static final String MERGE_QUERY = """
+            MERGE INTO %s AS final USING (SELECT * EXCLUDE (%s) FROM %s
+            WHERE ih_blockid = '%s'
+            and ih_op in ('c', 'r', 'u')) AS ingest ON %s
+            WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)
+            WHEN MATCHED THEN UPDATE SET %s""";
+
+    private static final String COPY_QUERY = "COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE";
+    private static final String DELETE_QUERY = """
+            DELETE FROM %s as final USING (SELECT %s FROM %s
+            WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest
+            WHERE %s
+            """;
+
     private Scheduler scheduler;
-    private List<String> pks = new ArrayList<>();
+    private Map<String, List<String>> pksByTable = new HashMap<>();
     private boolean flushHasDeletedRecords;
     private boolean flushHasInsertedRecords;
     private boolean flushHasUpdatedRecords;
@@ -62,14 +80,11 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     @Override
     protected void put(Collection<SinkRecord> collection) {
-        LOGGER.info("PUT - Total number of records to be stored in the buffer: {}", collection.size());
+        LOGGER.debug("PUT - Total number of records to be stored in the buffer: {}", collection.size());
         for (SinkRecord record : collection) {
-
             if (!validate(record)) {
                 throw new InvalidStructException("Invalid record structure or schema");
             }
-
-            pks = extractPK(record);
 
             var fieldOP = record.valueSchema().field(OP);
             if (fieldOP == null) {
@@ -84,6 +99,15 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 throw new InvalidStructException("Value for field '" + OP + "' is null");
             }
 
+            if (debeziumOperation.r.toString().equalsIgnoreCase(valueOP) && !mustProcessReadOnlyMessages) {
+                LOGGER.debug("Read message of topic: {}, discarded. Type: {}, parameter mustProcessReadOnlyMessages: {}",
+                        record.topic(), valueOP, mustProcessReadOnlyMessages);
+                continue;
+            }
+
+            String tableBaseName = extractTableName(record.topic());
+            List<String> tablePks = extractPK(record, tableBaseName);
+
             var recordToSnowflake = new SnowflakeRecord(
                     this.prepareEvent(debeziumOperation.d.toString().equalsIgnoreCase(valueOP) ? valueRecord.getStruct(BEFORE) : valueRecord.getStruct(AFTER)),
                     record.topic(),
@@ -93,8 +117,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                     LocalDateTime.now(ZoneOffset.UTC)
             );
 
-            LOGGER.trace("Added record to buffer: {} with operation {}", recordToSnowflake, valueOP);
-            buffer.put(convertPKToStringKey(record), recordToSnowflake);
+            LOGGER.trace("Added record to buffer [table={}]: {} with operation {}", tableBaseName, recordToSnowflake, valueOP);
+            getOrCreateBuffer(tableBaseName).put(convertPKToStringKey(record, tablePks), recordToSnowflake);
         }
     }
 
@@ -122,60 +146,71 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     @Override
     protected void flush(Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
-        var startTime = System.currentTimeMillis();
-        if (buffer.isEmpty()) {
-            return;
+        for (var entry : buffer.entrySet()) {
+            var tableBaseName = entry.getKey();
+            var tableBuffer = entry.getValue();
+            if (!tableBuffer.isEmpty()) {
+                flushTable(tableBaseName, processMultiTables ? tableBaseName : stageName, tableBuffer);
+            }
+            buffer.remove(tableBaseName);
         }
+    }
 
-        var totalBuffer = buffer.size();
+    private void flushTable(String tableBaseName, String stageName, CompressedMap<SnowflakeRecord> tableBuffer) {
+        var startTime = System.currentTimeMillis();
+        var totalBuffer = tableBuffer.size();
+        var ingestTableName = String.format(INGEST_TABLE_NAME_MASK, tableBaseName, INGEST_SUFFIX).toUpperCase();
         var destFileName = UUID.randomUUID().toString();
         Path tmpFilePathToInsert = null;
-        try {
-            LOGGER.debug("Preparing to send {} records from buffer. To stage {} and table {}", buffer.size(), stageName,
-                    tableName);
 
-            var columnsFromMetadata = columnsIngestTable;
+        try {
+            LOGGER.debug("Preparing to send {} records from buffer. To stage {} and table {}",
+                    tableBuffer.size(), stageName, tableBaseName);
+
+            if (processMultiTables) {
+                if (!columnsIngestTable.containsKey(ingestTableName)) {
+                    throw new RuntimeException("No pre-loaded columns for table: " + ingestTableName +
+                            ". Verify the _INGEST table exists in schema " + schemaName);
+                }
+            }
+
+            var ingestCols = columnsIngestTable.get(ingestTableName);
+            var finalCols = columnsFinalTable.get(tableBaseName.toUpperCase());
+            var tablePks = pksByTable.get(tableBaseName);
             var blockID = UUID.randomUUID().toString();
             var startTimeMain = System.currentTimeMillis();
-            tmpFilePathToInsert = prepareOrderedColumnsBasedOnTargetTable(blockID, columnsFromMetadata);
+            tmpFilePathToInsert = prepareOrderedColumnsBasedOnTargetTable(blockID, ingestCols, tableBuffer, tableBaseName);
 
             try (var inputStream = Files.newInputStream(tmpFilePathToInsert)) {
                 var startTimeUpload = System.currentTimeMillis();
-                snowflakeConnection.uploadStream(stageName, "/", inputStream, destFileName, true);
+                snowflakeConnection.uploadStream(stageName, FILE_SEPARATOR, inputStream, destFileName, true);
                 var endTimeUpload = System.currentTimeMillis();
-                LOGGER.debug("Uploaded {} records in {} ms", buffer.size(), endTimeUpload - startTimeUpload);
+                LOGGER.debug("Uploaded {} records in {} ms", tableBuffer.size(), endTimeUpload - startTimeUpload);
 
                 var startTimeStatement = System.currentTimeMillis();
                 try (var stmt = connection.createStatement()) {
+                    String copyInto = String.format(COPY_QUERY, ingestTableName,
+                            String.join(LINE_SEPARATOR_COMMA, ingestCols), stageName, destFileName);
 
-                    //copy everything to ingest
-                    String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName,
-                            String.join(",", columnsFromMetadata), stageName, destFileName);
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
+
                     stmt.executeLargeUpdate(copyInto);
 
-                    // Delete temp file after SnowFlake upload and COPY to ingest table and clear buffer.
                     this.discardData(tmpFilePathToInsert);
 
                     if (flushHasInsertedRecords || flushHasUpdatedRecords) {
-                        //insert/update in final table
-                        String merge = String.format("MERGE INTO %s AS final USING (SELECT * EXCLUDE (%s) FROM %s WHERE ih_blockid = '%s' and ih_op in ('c', 'r', 'u')) AS ingest ON %s " +
-                                        "WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s) " +
-                                        "WHEN MATCHED THEN UPDATE SET %s",
-                                tableName, buildExcludeColumns(), ingestTableName, blockID,
-                                buildPkWhereClause(pks), String.join(",", columnsFinalTable),
-                                String.join(",", columnsFinalTable.stream().map(c -> "ingest." + c).toList()),
-                                buildUpdateColumns());
+                        String merge = String.format(MERGE_QUERY, tableBaseName, buildExcludeColumns(), ingestTableName,
+                                blockID, buildPkWhereClause(tablePks), String.join(LINE_SEPARATOR_COMMA, finalCols),
+                                String.join(LINE_SEPARATOR_COMMA, finalCols.stream().map(c -> String.format("ingest.%s", c)).toList()),
+                                buildUpdateColumns(finalCols));
                         LOGGER.debug("Merging statement to final table: {}", merge);
                         stmt.executeLargeUpdate(merge);
                     }
 
-                    //delete from final table
                     if (flushHasDeletedRecords) {
-                        String deleteFromFinalTable = String.format(
-                                "DELETE FROM %s as final USING (SELECT %s FROM %s WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest WHERE %s",
-                                tableName, String.join(",", pks), ingestTableName, blockID,
-                                buildPkWhereClause(pks));
+                        String deleteFromFinalTable = String.format(DELETE_QUERY, tableBaseName,
+                                String.join(",", tablePks), ingestTableName,
+                                blockID, buildPkWhereClause(tablePks));
                         LOGGER.debug("Deleting statement from final table: {}", deleteFromFinalTable);
                         stmt.executeLargeUpdate(deleteFromFinalTable);
                     }
@@ -191,7 +226,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             LOGGER.debug("Process records took {} ms", endTimeMain - startTimeMain);
 
         } catch (Throwable e) {
-            LOGGER.error("Error while flushing Snowflake connector", e);
+            LOGGER.error("Error while flushing Snowflake connector for table {}", tableBaseName, e);
 
             if (tmpFilePathToInsert != null) {
                 try {
@@ -202,20 +237,19 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 }
             }
 
-            throw new RuntimeException("Error while flushing", e);
+            throw new RuntimeException("Error while flushing table " + tableBaseName, e);
         } finally {
             var endTime = System.currentTimeMillis();
             LOGGER.debug("Flushed {} records in {} ms", totalBuffer, endTime - startTime);
-            buffer.clear();
+            tableBuffer.clear();
         }
     }
 
     private void discardData(Path csvToInsert) throws IOException {
-        LOGGER.debug("Discard buffer and CSV file data: {} of stage: {} after SnowFlake upload and COPY to ingest table.",
-                csvToInsert.getFileName().toString(), stageName);
-        buffer.clear();
+        LOGGER.debug("Discard CSV temp file: {} after SnowFlake upload and COPY to ingest table.",
+                csvToInsert.getFileName().toString());
         Files.deleteIfExists(csvToInsert);
-        LOGGER.debug("Discarded CSV file data: {} of stage: {}.", csvToInsert.getFileName().toString(), stageName);
+        LOGGER.debug("Discarded CSV temp file: {}.", csvToInsert.getFileName().toString());
     }
 
     @Override
@@ -230,7 +264,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
     }
 
     protected void startCleanUpJob(AbstractConfig config) throws SchedulerException {
-
         var disableCleanUpJob = config.getBoolean(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DISABLE);
 
         if (disableCleanUpJob) {
@@ -241,10 +274,9 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         var durationCleanup = Duration.parse(config.getString(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DURATION));
         LOGGER.info("Cleanup job will run every {} seconds", durationCleanup.toSeconds());
 
-        // job quartz config
         var jobData = new HashMap<String, Object>();
         jobData.put(CleanupJob.SNOWFLAKE_CONNECTION, connection);
-        jobData.put(CleanupJob.INGEST_TABLE_NAME, ingestTableName);
+        jobData.put(CleanupJob.INGEST_TABLE_NAMES, knownIngestTables);
 
         var props = new Properties();
         props.setProperty(StdSchedulerFactory.PROP_SCHED_INSTANCE_NAME, String.format("cleanup_%s", UUID.randomUUID()));
@@ -252,27 +284,30 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         var schedulerFactory = new StdSchedulerFactory(props);
         scheduler = schedulerFactory.getScheduler();
+
         var job = JobBuilder.newJob(CleanupJob.class).withIdentity("cleanupjob")
                 .setJobData(new JobDataMap(jobData))
                 .build();
+
         var trigger = TriggerBuilder.newTrigger().withIdentity("trigger_cleanupjob")
                 .withSchedule(SimpleScheduleBuilder.repeatSecondlyForever((int) durationCleanup.getSeconds()))
                 .build();
+
         scheduler.scheduleJob(job, trigger);
         scheduler.start();
     }
 
-    private List<String> extractPK(SinkRecord record) {
-        if (pks.isEmpty()) {
+    private List<String> extractPK(SinkRecord record, String tableBaseName) {
+        return pksByTable.computeIfAbsent(tableBaseName, k -> {
+            var pks = new ArrayList<String>();
             for (Field field : record.keySchema().fields()) {
                 pks.add(field.name());
             }
-        }
-
-        return pks;
+            return pks;
+        });
     }
 
-    private String convertPKToStringKey(SinkRecord record) {
+    private String convertPKToStringKey(SinkRecord record, List<String> pks) {
         var keyStruct = (Struct) record.key();
         var pkValues = new ArrayList<String>();
         for (String pk : pks) {
@@ -287,9 +322,9 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         return String.join("+", pkValues);
     }
 
-    private String buildUpdateColumns() {
+    private String buildUpdateColumns(List<String> finalCols) {
         var columns = new ArrayList<String>();
-        for (String column : columnsFinalTable) {
+        for (String column : finalCols) {
             columns.add(String.format("final.%s = ingest.%s", column, column));
         }
         return String.join(",", columns);
@@ -305,17 +340,18 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 .reduce((a, b) -> String.format("%s and %s", a, b)).orElseThrow();
     }
 
-    protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable) throws Throwable {
+    protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable,
+                                                           CompressedMap<SnowflakeRecord> tableBuffer, String tableBaseName) throws Throwable {
         var startTime = System.currentTimeMillis();
-        var stringBuilder = new StringBuilder(buffer.size() * SB_CSV_INITIAL_SIZE);
+        var stringBuilder = new StringBuilder(tableBuffer.size() * SB_CSV_INITIAL_SIZE);
 
         flushHasDeletedRecords = false;
         flushHasUpdatedRecords = false;
         flushHasInsertedRecords = false;
 
         boolean loggedDebugForFirstLine = false;
-        for (var recordInBuffer : buffer.values()) {
-            var recordData = buffer.deserializeValue(recordInBuffer);
+        for (var recordInBuffer : tableBuffer.values()) {
+            var recordData = tableBuffer.deserializeValue(recordInBuffer);
             var count = 0;
             var op = recordData.op();
 
@@ -398,13 +434,13 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
         stringBuilder.trimToSize();
 
-        return this.generateTempFile(stringBuilder, startTime);
+        return this.generateTempFile(stringBuilder, startTime, tableBaseName);
     }
 
-    private Path generateTempFile(StringBuilder stringBuilder, long startTime) throws IOException {
-        Files.createDirectories(Path.of(String.format("%s/%s", tmpDataFolder, stageName)));
+    private Path generateTempFile(StringBuilder stringBuilder, long startTime, String tableBaseName) throws IOException {
+        Files.createDirectories(Path.of(String.format("%s/%s/%s", tmpDataFolder, schemaName, tableBaseName)));
 
-        var tmpPath = Path.of(String.format("%s/%s/%s.csv", tmpDataFolder, stageName, UUID.randomUUID()));
+        var tmpPath = Path.of(String.format("%s/%s/%s/%s.csv", tmpDataFolder, schemaName, tableBaseName, UUID.randomUUID()));
         Files.deleteIfExists(tmpPath);
 
         var resultPath = Files.writeString(tmpPath, stringBuilder.toString(), StandardOpenOption.CREATE);

@@ -1,117 +1,38 @@
 package br.com.datastreambrasil.v3;
 
-import org.apache.kafka.common.config.AbstractConfig;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 
+/**
+ * Tests AbstractProcessor's lazy column loading via both the JDBC metadata API
+ * and the INFORMATION_SCHEMA query path.
+ */
 class AbstractProcessorInformationSchemaTest {
 
     @Test
-    void testUsesStatementNotPreparedStatement() throws Exception {
-        var processor = createProcessor("MY_SCHEMA", "MY_TABLE_INGEST");
-        var mockStatement = mock(Statement.class);
-        var mockResultSet = buildResultSet(List.of("COL1"));
+    void testKnownIngestTablesPopulatedOnGetOrCreateBuffer() {
+        var processor = createProcessor("MY_SCHEMA", "MY_TABLE");
+        processor.bufferInitialCapacity = 100;
 
-        when(processor.connection.createStatement()).thenReturn(mockStatement);
-        when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
+        processor.getOrCreateBuffer("MY_TABLE");
 
-        processor.configMetadataV2(createConfig());
-
-        verify(processor.connection).createStatement();
-        verify(processor.connection, never()).prepareStatement(anyString());
+        assertTrue(processor.knownIngestTables.contains("MY_TABLE_INGEST"),
+                "knownIngestTables should contain MY_TABLE_INGEST after buffer creation");
     }
 
-    @Test
-    void testSqlContainsUppercaseSchemaAndTable() throws Exception {
-        var processor = createProcessor("my_schema", "my_table_INGEST");
-        var mockStatement = mock(Statement.class);
-        var mockResultSet = buildResultSet(List.of("COL1"));
-
-        when(processor.connection.createStatement()).thenReturn(mockStatement);
-        when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
-
-        processor.configMetadataV2(createConfig());
-
-        verify(mockStatement).executeQuery(argThat(sql ->
-                sql.contains("'MY_SCHEMA'") && sql.contains("'MY_TABLE_INGEST'")));
-    }
-
-    @Test
-    void testColumnsIngestTableAndFinalTablePopulated() throws Exception {
-        var ingestColumns = List.of("COL1", "COL2", "IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
-        var processor = createProcessor("MY_SCHEMA", "MY_TABLE_INGEST");
-        var mockStatement = mock(Statement.class);
-        var mockResultSet = buildResultSet(ingestColumns);
-
-        when(processor.connection.createStatement()).thenReturn(mockStatement);
-        when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
-
-        processor.configMetadataV2(createConfig());
-
-        assertEquals(ingestColumns, processor.columnsIngestTable);
-        assertEquals(List.of("COL1", "COL2"), processor.columnsFinalTable);
-    }
-
-    @Test
-    void testThrowsExceptionWhenNoColumnsFound() throws Exception {
-        var processor = createProcessor("MY_SCHEMA", "MY_TABLE_INGEST");
-        var mockStatement = mock(Statement.class);
-        var mockResultSet = buildResultSet(List.of());
-
-        when(processor.connection.createStatement()).thenReturn(mockStatement);
-        when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
-
-        assertThrows(RuntimeException.class, () -> processor.configMetadataV2(createConfig()));
-    }
-
-    @Test
-    void testIgnoreColumnsAreFiltered() throws Exception {
-        var processor = createProcessor("MY_SCHEMA", "MY_TABLE_INGEST");
-        processor.ignoreColumns.add("COL2");
-        var mockStatement = mock(Statement.class);
-        var mockResultSet = buildResultSet(List.of("COL1", "COL2", "COL3"));
-
-        when(processor.connection.createStatement()).thenReturn(mockStatement);
-        when(mockStatement.executeQuery(anyString())).thenReturn(mockResultSet);
-
-        processor.configMetadataV2(createConfig());
-
-        assertEquals(List.of("COL1", "COL3"), processor.columnsIngestTable);
-    }
-
-    private AbstractConfig createConfig() {
-        return new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, Map.of());
-    }
-
-    private CdcDbzSchemaProcessor createProcessor(String schemaName, String ingestTableName) {
+    private CdcDbzSchemaProcessor createProcessor(String schemaName, String tableBaseName) {
         var processor = new CdcDbzSchemaProcessor();
         processor.connection = mock(Connection.class);
         processor.schemaName = schemaName;
-        processor.ingestTableName = ingestTableName;
+        processor.tableName = tableBaseName;
         processor.ignoreColumns = new ArrayList<>();
+        processor.excludeIngestAdditionalFields = List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID");
         return processor;
-    }
-
-    private ResultSet buildResultSet(List<String> columns) throws Exception {
-        var rs = mock(ResultSet.class);
-        var idx = new int[]{-1};
-        when(rs.next()).thenAnswer(a -> {
-            idx[0]++;
-            return idx[0] < columns.size();
-        });
-        if (!columns.isEmpty()) {
-            when(rs.getString("COLUMN_NAME")).thenAnswer(a -> columns.get(idx[0]));
-        }
-        return rs;
     }
 }

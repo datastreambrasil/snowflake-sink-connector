@@ -6,6 +6,8 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 class SnowflakeSinkConnectorTest {
 
@@ -40,5 +42,21 @@ class SnowflakeSinkConnectorTest {
         assertFalse(taskConfigs.get(0).containsKey(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DISABLE));
         assertEquals("true", taskConfigs.get(1).get(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DISABLE));
         assertEquals("true", taskConfigs.get(2).get(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DISABLE));
+    }
+
+    @Test
+    void version_returnsV3() {
+        assertEquals("v3", new SnowflakeSinkConnector().version());
+    }
+
+    @Test
+    void taskClass_returnsSnowflakeSinkTaskClass() {
+        assertSame(SnowflakeSinkTask.class, new SnowflakeSinkConnector().taskClass());
+    }
+
+    @Test
+    void config_returnsNonNullConfigDef() {
+        assertNotNull(new SnowflakeSinkConnector().config());
+        assertSame(SnowflakeSinkConnector.CONFIG_DEF, new SnowflakeSinkConnector().config());
     }
 }

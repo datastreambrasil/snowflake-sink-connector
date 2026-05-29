@@ -11,6 +11,8 @@ import java.util.Map;
 
 public class SnowflakeSinkTask extends SinkTask {
 
+    private static final String PROFILE_TYPE = "cdc_schema";
+
     private AbstractProcessor processor;
 
     @Override
@@ -21,13 +23,11 @@ public class SnowflakeSinkTask extends SinkTask {
     @Override
     public void start(Map<String, String> map) {
         AbstractConfig config = new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, map);
-        
-        switch (config.getString(SnowflakeSinkConnector.CFG_PROFILE)) {
-            case "cdc_schema":
-                processor = new CdcDbzSchemaProcessor();
-                break;
-            default:
-                throw new RuntimeException("Unknown profile: " + config.getString(SnowflakeSinkConnector.CFG_PROFILE));
+
+        if (PROFILE_TYPE.equalsIgnoreCase(config.getString(SnowflakeSinkConnector.CFG_PROFILE))) {
+            processor = new CdcDbzSchemaProcessor();
+        } else {
+            throw new RuntimeException("Unknown profile: " + config.getString(SnowflakeSinkConnector.CFG_PROFILE));
         }
 
         processor.start(config);
