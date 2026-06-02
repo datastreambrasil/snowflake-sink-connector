@@ -159,7 +159,10 @@ public class SnowflakeSinkTask extends SinkTask {
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);
 
             //fill columns
-            if (config.getBoolean(SnowflakeSinkConnector.FIND_COLUMNS_IN_METADATA)) {
+            if (!config.getList(SnowflakeSinkConnector.CFG_TABLE_FIELDS).isEmpty()) {
+                columnsFinalTable = getColumnsFromConfig(config.getList(SnowflakeSinkConnector.CFG_TABLE_FIELDS));
+            }
+            else if (config.getBoolean(SnowflakeSinkConnector.FIND_COLUMNS_IN_METADATA)) {
                 columnsFinalTable = getColumnsFromMetadata(tableName);
             } else {
                 columnsFinalTable = getColumnsFromMetadataInformationSchema(tableName);
@@ -195,6 +198,11 @@ public class SnowflakeSinkTask extends SinkTask {
             LOGGER.error("Error while starting Snowflake connector", e);
             throw new RuntimeException("Error while starting Snowflake connector", e);
         }
+    }
+
+    private List<String> getColumnsFromConfig(List<String> fields) {
+        fields.removeAll(ignoreColumns);
+        return  fields;
     }
 
     @Override

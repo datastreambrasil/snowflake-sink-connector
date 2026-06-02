@@ -14,6 +14,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -281,5 +282,64 @@ class AbstractProcessorColumnLoadingTest {
         when(p.connection.createStatement()).thenThrow(new SQLException("db down"));
 
         assertThrows(RuntimeException.class, p::preloadAllTableColumns);
+    }
+
+    // ── loadColumnsFromConfig ─────────────────────────────────────────────────
+
+    @Test
+    void loadColumnsFromConfig_singleTable_populatesBothMapsAndKnownIngestTables() {
+        var p = processor("MY_SCHEMA");
+
+        p.loadColumnsFromConfig("MY_TABLE-ID,NAME,CREATED_AT");
+
+        assertEquals(List.of("ID", "NAME", "CREATED_AT"), p.columnsIngestTable.get("MY_TABLE_INGEST"));
+        assertEquals(List.of("ID", "NAME", "CREATED_AT"), p.columnsFinalTable.get("MY_TABLE"));
+        assertTrue(p.knownIngestTables.contains("MY_TABLE_INGEST"));
+    }
+
+    @Test
+    void loadColumnsFromConfig_multipleTables_eachTablePopulatedIndependently() {
+        var p = processor("MY_SCHEMA");
+
+        p.loadColumnsFromConfig("TABLE_A-ID,VALUE|TABLE_B-CODE,DESCRIPTION");
+
+        assertEquals(List.of("ID", "VALUE"), p.columnsIngestTable.get("TABLE_A_INGEST"));
+        assertEquals(List.of("ID", "VALUE"), p.columnsFinalTable.get("TABLE_A"));
+        assertEquals(List.of("CODE", "DESCRIPTION"), p.columnsIngestTable.get("TABLE_B_INGEST"));
+        assertEquals(List.of("CODE", "DESCRIPTION"), p.columnsFinalTable.get("TABLE_B"));
+        assertTrue(p.knownIngestTables.containsAll(List.of("TABLE_A_INGEST", "TABLE_B_INGEST")));
+    }
+
+    @Test
+    void loadColumnsFromConfig_ignoreColumnsRemovedFromBothMaps() {
+        var p = processor("MY_SCHEMA");
+        p.ignoreColumns.add("AUDIT_COL");
+
+        p.loadColumnsFromConfig("MY_TABLE-ID,NAME,AUDIT_COL");
+
+        assertFalse(p.columnsIngestTable.get("MY_TABLE_INGEST").contains("AUDIT_COL"),
+                "ignoreColumns should be removed from ingest table");
+        assertFalse(p.columnsFinalTable.get("MY_TABLE").contains("AUDIT_COL"),
+                "ignoreColumns should be removed from final table");
+        assertTrue(p.columnsIngestTable.get("MY_TABLE_INGEST").containsAll(List.of("ID", "NAME")));
+    }
+
+    @Test
+    void loadColumnsFromConfig_tableNameConvertedToUpperCase() {
+        var p = processor("MY_SCHEMA");
+
+        p.loadColumnsFromConfig("my_table-ID,NAME");
+
+        assertTrue(p.knownIngestTables.contains("MY_TABLE_INGEST"),
+                "Table name should be uppercased");
+        assertNotNull(p.columnsFinalTable.get("MY_TABLE"));
+    }
+
+    @Test
+    void loadColumnsFromConfig_invalidFormatThrowsRuntimeException() {
+        var p = processor("MY_SCHEMA");
+
+        assertThrows(RuntimeException.class,
+                () -> p.loadColumnsFromConfig("INVALID_ENTRY_WITHOUT_DASH"));
     }
 }

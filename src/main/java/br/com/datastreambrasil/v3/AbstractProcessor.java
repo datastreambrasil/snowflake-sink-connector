@@ -95,7 +95,10 @@ public abstract class AbstractProcessor {
         configParameters(config);
         setupSnowflakeConnection(config);
 
-        if (findInColumnsMetadata && !processMultiTables) {
+        var tablesFields = config.getString(SnowflakeSinkConnector.CFG_TABLES_FIELDS);
+        if (tablesFields != null && !tablesFields.isBlank()) {
+            loadColumnsFromConfig(tablesFields);
+        } else if (findInColumnsMetadata && !processMultiTables) {
             prepareColumnsFromMetadata(tableName.toUpperCase(), config);
         } else {
             preloadAllTableColumns();
@@ -199,6 +202,40 @@ public abstract class AbstractProcessor {
         LOGGER.info("Pre-loaded columns for {} ingest tables in schema {}", rawByIngestTable.size(), schemaName);
     }
 
+    void loadColumnsFromConfig(String tablesFields) {
+        var tableEntries = tablesFields.split("\\|");
+
+        for (var entry : tableEntries) {
+            var dashIdx = entry.indexOf('-');
+            if (dashIdx <= 0) {
+                throw new RuntimeException(
+                    "Invalid tables_fields format, expected 'tableName-field1,field2': " + entry);
+            }
+
+            var baseTableName = entry.substring(0, dashIdx).trim().toUpperCase();
+            var fieldsString = entry.substring(dashIdx + 1).trim();
+            var rawCols = new ArrayList<>(List.of(fieldsString.split(",")));
+            rawCols.replaceAll(String::trim);
+
+            rawCols.removeAll(ignoreColumns);
+
+            List<String> ingestCols = new ArrayList<>(rawCols);
+            ingestCols.addAll(excludeIngestAdditionalFields);
+
+            var ingestTableName = baseTableName + INGEST_SUFFIX;
+            columnsIngestTable.put(ingestTableName, ingestCols);
+            columnsFinalTable.put(baseTableName, rawCols);
+            knownIngestTables.add(ingestTableName);
+
+            LOGGER.debug("Loaded {} columns from config for ingest table: {} - Columns names: {}",
+                    rawCols.size(), ingestTableName, ingestCols);
+            LOGGER.debug("Loaded {} columns from config for ingest table: {} for final table: {} - Columns names: {}",
+                    ingestCols.size(), ingestTableName, baseTableName, rawCols);
+        }
+
+        LOGGER.info("Loaded columns for {} tables from config", tableEntries.length);
+    }
+
     protected CompressedMap<SnowflakeRecord> getOrCreateBuffer(String tableBaseName) {
         return buffer.computeIfAbsent(tableBaseName, k -> {
             knownIngestTables.add(String.format("%s%s", tableBaseName, INGEST_SUFFIX));
@@ -223,14 +260,12 @@ public abstract class AbstractProcessor {
             }
 
             columnsFromTable.removeAll(ignoreColumns);
-            var columnsNoDuplicate = columnsFromTable.stream().distinct().toList();
 
             LOGGER.debug("Columns: {} mapped from target table: {}",
-                    String.join(LINE_SEPARATOR_COMMA, columnsNoDuplicate), table);
+                    String.join(LINE_SEPARATOR_COMMA, columnsFromTable), table);
 
             var ingestTableName = String.format("%s%s", table, INGEST_SUFFIX);
-            var columnsFromIngestTable = new ArrayList<String>();
-            columnsFromIngestTable.addAll(columnsFromTable);
+            var columnsFromIngestTable = new ArrayList<>(columnsFromTable);
             columnsFromIngestTable.addAll(config.getList(SnowflakeSinkConnector.CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS));
 
             columnsIngestTable.put(ingestTableName, columnsFromIngestTable);

@@ -37,6 +37,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS = "exclude_ingest_additional_fields";
     protected static final String CFG_PROCESS_MULTIPLE_TABLES = "process_multiples_tables";
     protected static final String CFG_MUST_PROCESS_READ_ONLY_MESSAGES = "must_process_read_only_messages";
+    protected static final String CFG_TABLES_FIELDS = "tables_fields";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -118,7 +119,10 @@ public class SnowflakeSinkConnector extends SinkConnector {
                 "Determine whether to process multiple tables.")
         .define(CFG_MUST_PROCESS_READ_ONLY_MESSAGES, ConfigDef.Type.BOOLEAN, Boolean.TRUE,
                 ConfigDef.Importance.HIGH,
-                "Determines whether to process read-only messages.");
+                "Determines whether to process read-only messages.")
+        .define(CFG_TABLES_FIELDS, ConfigDef.Type.STRING, null,
+                ConfigDef.Importance.HIGH,
+                "Defines the names of the fields and tables to be processed, disabling column lookup in the database. Format: table1-field1,fieldX|table2-field1,fieldX.");
 
     private Map<String, String> props;
 
