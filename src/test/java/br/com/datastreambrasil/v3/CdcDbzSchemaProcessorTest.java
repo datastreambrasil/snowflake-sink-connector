@@ -84,41 +84,40 @@ class CdcDbzSchemaProcessorTest {
         processor.put(generateUpdateEvents(dt, "update 001", "10"));//this update should be ignored, because it will be overridden by the next update event
         processor.put(generateUpdateEvents(dt, "update 002", "10"));
         processor.put(generateDeleteEvents(dt, "20"));
-        processor.put(generateDeleteEvents(dt, "3")); //this delete will override the create event for id 3
+        processor.put(generateDeleteEvents(dt, "3")); //delete and create for id 3 coexist as separate entries (key = pk+op)
 
         var tableBuffer = processor.buffer.get("test_table");
-        assertEquals(5, tableBuffer.size());
+        // 6 entries: 1+c, 2+c, 3+c, 3+d, 10+u (dedup'd), 20+d
+        assertEquals(6, tableBuffer.size());
 
         var itemIdx = "1";
         //assert item create
-        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
+        assertEquals(itemIdx, tableBuffer.get(itemIdx + "+c").event().stream()
                 .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name " + itemIdx, tableBuffer.get(itemIdx).event().stream()
+        assertEquals("Name " + itemIdx, tableBuffer.get(itemIdx + "+c").event().stream()
                 .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("c", tableBuffer.get(itemIdx).op());
+        assertEquals("c", tableBuffer.get(itemIdx + "+c").op());
 
         //assert item update
         itemIdx = "10";
-        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
+        assertEquals(itemIdx, tableBuffer.get(itemIdx + "+u").event().stream()
                 .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name update 002 " + itemIdx, tableBuffer.get(itemIdx).event().stream()
+        assertEquals("Name update 002 " + itemIdx, tableBuffer.get(itemIdx + "+u").event().stream()
                 .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("u", tableBuffer.get(itemIdx).op());
+        assertEquals("u", tableBuffer.get(itemIdx + "+u").op());
 
-        //asert item delete
+        //assert item delete
         itemIdx = "20";
-        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
+        assertEquals(itemIdx, tableBuffer.get(itemIdx + "+d").event().stream()
                 .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name " + itemIdx, tableBuffer.get(itemIdx).event().stream()
+        assertEquals("Name " + itemIdx, tableBuffer.get(itemIdx + "+d").event().stream()
                 .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("d", tableBuffer.get(itemIdx).op());
+        assertEquals("d", tableBuffer.get(itemIdx + "+d").op());
 
+        // id=3: create and delete coexist as separate buffer entries
         itemIdx = "3";
-        assertEquals(itemIdx, tableBuffer.get(itemIdx).event().stream()
-                .filter(f -> f.name().equals("Id")).findFirst().get().data());
-        assertEquals("Name " + itemIdx, tableBuffer.get(itemIdx).event().stream()
-                .filter(f -> f.name().equals("Name")).findFirst().get().data());
-        assertEquals("d", tableBuffer.get(itemIdx).op());
+        assertEquals("c", tableBuffer.get(itemIdx + "+c").op());
+        assertEquals("d", tableBuffer.get(itemIdx + "+d").op());
     }
 
     @Test
@@ -176,7 +175,7 @@ class CdcDbzSchemaProcessorTest {
         var tableBuffer = processor.buffer.get("test_table");
         assertNotNull(tableBuffer, "Buffer should contain create events");
         assertEquals(1, tableBuffer.size(), "Only create event should be in buffer; read events must be discarded");
-        assertEquals("c", tableBuffer.get("3").op());
+        assertEquals("c", tableBuffer.get("3+c").op());
     }
 
     @Test
@@ -191,8 +190,8 @@ class CdcDbzSchemaProcessorTest {
         var tableBuffer = processor.buffer.get("test_table");
         assertNotNull(tableBuffer, "Buffer should contain read events when mustProcessReadOnlyMessages=true");
         assertEquals(2, tableBuffer.size());
-        assertEquals("r", tableBuffer.get("1").op());
-        assertEquals("r", tableBuffer.get("2").op());
+        assertEquals("r", tableBuffer.get("1+r").op());
+        assertEquals("r", tableBuffer.get("2+r").op());
     }
 
     @Test
