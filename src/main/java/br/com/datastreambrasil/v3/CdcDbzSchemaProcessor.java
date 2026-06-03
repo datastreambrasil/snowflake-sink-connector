@@ -146,13 +146,15 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     @Override
     protected void flush(Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
-        for (var entry : buffer.entrySet()) {
+        var iterator = buffer.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
             var tableBaseName = entry.getKey();
             var tableBuffer = entry.getValue();
             if (!tableBuffer.isEmpty()) {
                 flushTable(tableBaseName, processMultiTables ? tableBaseName : stageName, tableBuffer);
             }
-            buffer.remove(tableBaseName);
+            iterator.remove();
         }
     }
 
@@ -167,11 +169,9 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             LOGGER.debug("Preparing to send {} records from buffer. To stage {} and table {}",
                     tableBuffer.size(), stageName, tableBaseName);
 
-            if (processMultiTables) {
-                if (!columnsIngestTable.containsKey(ingestTableName)) {
-                    throw new RuntimeException("No pre-loaded columns for table: " + ingestTableName +
-                            ". Verify the _INGEST table exists in schema " + schemaName);
-                }
+            if (!columnsIngestTable.containsKey(ingestTableName)) {
+                throw new RuntimeException("No pre-loaded columns for table: " + ingestTableName +
+                        ". Verify the _INGEST table exists in schema " + schemaName);
             }
 
             var ingestCols = columnsIngestTable.get(ingestTableName);
