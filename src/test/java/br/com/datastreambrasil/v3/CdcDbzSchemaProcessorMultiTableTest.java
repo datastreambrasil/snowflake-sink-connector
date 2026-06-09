@@ -151,10 +151,10 @@ class CdcDbzSchemaProcessorMultiTableTest {
         var bufferX = processor.buffer.get("tabelaX");
         var bufferZ = processor.buffer.get("tabelaZ");
 
-        assertNotNull(bufferX.get("1+c"), "PK '1' (create) must exist in tabelaX buffer");
-        assertNotNull(bufferZ.get("1+d"), "PK '1' (delete) must exist in tabelaZ buffer");
-        assertEquals("c", bufferX.get("1+c").op(), "tabelaX pk='1' must be a create");
-        assertEquals("d", bufferZ.get("1+d").op(), "tabelaZ pk='1' must be a delete");
+        assertNotNull(bufferX.get("1"), "PK '1' must exist in tabelaX buffer");
+        assertNotNull(bufferZ.get("1"), "PK '1' must exist in tabelaZ buffer");
+        assertEquals("c", bufferX.get("1").op(), "tabelaX pk='1' must be a create");
+        assertEquals("d", bufferZ.get("1").op(), "tabelaZ pk='1' must be a delete");
     }
 
     @Test
@@ -190,14 +190,12 @@ class CdcDbzSchemaProcessorMultiTableTest {
         processor.put(generateCreateEventsForTopic(dt, "prefix.source_a.orders", "1", "2"));
         processor.put(generateUpdateEventsForTopic(dt, "prefix.source_b.orders", "1"));
 
-        // Both topics resolve to "orders" — create and update for id=1 coexist as separate entries (key = pk+op)
+        // Both resolve to "orders" — update on id=1 must override the create
         var bufferOrders = processor.buffer.get("orders");
         assertNotNull(bufferOrders, "Buffer for 'orders' must exist");
-        // 3 entries: 1+c (create), 2+c (create), 1+u (update)
-        assertEquals(3, bufferOrders.size(), "Buffer must have 3 entries: create and update for id=1, and create for id=2");
-        assertEquals("c", bufferOrders.get("1+c").op(), "id=1 create entry must exist");
-        assertEquals("u", bufferOrders.get("1+u").op(), "id=1 update entry must exist");
-        assertEquals("c", bufferOrders.get("2+c").op(), "id=2 must remain a create operation");
+        assertEquals(2, bufferOrders.size(), "Buffer must have 2 entries (id=1 updated, id=2 created)");
+        assertEquals("u", bufferOrders.get("1").op(), "id=1 must reflect the latest update operation");
+        assertEquals("c", bufferOrders.get("2").op(), "id=2 must remain a create operation");
     }
 
     private Statement prepareForMultiTableFlush(CdcDbzSchemaProcessor processor,

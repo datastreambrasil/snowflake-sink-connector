@@ -118,7 +118,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             );
 
             LOGGER.trace("Added record to buffer [table={}]: {} with operation {}", tableBaseName, recordToSnowflake, valueOP);
-            getOrCreateBuffer(tableBaseName).put(convertPKToStringKey(record, valueOP, tablePks), recordToSnowflake);
+            getOrCreateBuffer(tableBaseName).put(convertPKToStringKey(record, tablePks), recordToSnowflake);
         }
     }
 
@@ -307,7 +307,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
         });
     }
 
-    private String convertPKToStringKey(SinkRecord record, String valueOP, List<String> pks) {
+    private String convertPKToStringKey(SinkRecord record, List<String> pks) {
         var keyStruct = (Struct) record.key();
         var pkValues = new ArrayList<String>();
         for (String pk : pks) {
@@ -318,7 +318,6 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             }
             pkValues.add(value.toString());
         }
-        pkValues.add(valueOP);
 
         return String.join("+", pkValues);
     }
