@@ -154,7 +154,7 @@ class AbstractProcessorColumnLoadingTest {
     // ── preloadAllTableColumns ────────────────────────────────────────────────
 
     @Test
-    void preloadAllTableColumns_populatesMapsAndKnownIngestTablesForSingleTable() throws SQLException {
+    void preloadAllTableColumns_populatesMapsWithoutPopulatingKnownIngestTables() throws SQLException {
         var p = processor("MY_SCHEMA");
         var stmt = mock(Statement.class);
         var rs = rsFromRows(List.of(
@@ -170,8 +170,8 @@ class AbstractProcessorColumnLoadingTest {
                 "columnsIngestTable should reflect all columns for the ingest table");
         assertEquals(List.of("ID", "NAME"), p.columnsFinalTable.get("MY_TABLE"),
                 "columnsFinalTable should use the base table name (without _INGEST suffix)");
-        assertTrue(p.knownIngestTables.contains("MY_TABLE_INGEST"),
-                "knownIngestTables should include the ingest table name");
+        assertTrue(p.knownIngestTables.isEmpty(),
+                "preloadAllTableColumns must not populate knownIngestTables; only topics in processing do");
     }
 
     @Test
@@ -193,7 +193,8 @@ class AbstractProcessorColumnLoadingTest {
         assertEquals(List.of("ID", "VALUE"), p.columnsFinalTable.get("TABLE_A"));
         assertEquals(List.of("CODE", "DESCRIPTION"), p.columnsIngestTable.get("TABLE_B_INGEST"));
         assertEquals(List.of("CODE", "DESCRIPTION"), p.columnsFinalTable.get("TABLE_B"));
-        assertTrue(p.knownIngestTables.containsAll(List.of("TABLE_A_INGEST", "TABLE_B_INGEST")));
+        assertTrue(p.knownIngestTables.isEmpty(),
+                "preloadAllTableColumns must not populate knownIngestTables; only topics in processing do");
     }
 
     @Test

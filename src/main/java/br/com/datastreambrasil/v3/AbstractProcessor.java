@@ -191,7 +191,6 @@ public abstract class AbstractProcessor {
 
             columnsIngestTable.put(ingestTableName, ingestCols);
             columnsFinalTable.put(baseTableName, finalCols);
-            knownIngestTables.add(ingestTableName);
 
             LOGGER.debug("Pre-loaded {} columns for ingest table: {} - Columns names: {}",
                     ingestCols.size(), ingestTableName, ingestCols);
