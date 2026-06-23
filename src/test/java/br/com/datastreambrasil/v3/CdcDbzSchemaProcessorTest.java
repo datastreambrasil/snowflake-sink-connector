@@ -48,6 +48,7 @@ import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.ArgumentCaptor;
 
 class CdcDbzSchemaProcessorTest {
 
@@ -331,6 +332,32 @@ class CdcDbzSchemaProcessorTest {
         assertEquals(0, processor.buffer.size(), "Buffer map should be empty after flush");
         assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_table")));
         assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_table")).toList().isEmpty());
+    }
+
+    @Test
+    void testFlushMergeQueryContainsHashDeduplicationCondition() throws SQLException, IOException {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.findInColumnsMetadata = true;
+        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
+        var statementMock = prepareToFlush(processor);
+        processor.put(generateCreateEvents(dt, "1"));
+        processor.put(generateUpdateEvents(dt, "new", "2"));
+        processor.columnsIngestTable.put("TEST_TABLE_INGEST",
+                List.of("id", "name", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"));
+        processor.columnsFinalTable.put("TEST_TABLE", List.of("id", "name"));
+
+        processor.flush(null);
+
+        var sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(statementMock, times(2)).executeLargeUpdate(sqlCaptor.capture()); // COPY + MERGE
+        var mergeSQL = sqlCaptor.getAllValues().stream()
+                .filter(sql -> sql.startsWith("MERGE"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("MERGE statement not generated"));
+        assertTrue(mergeSQL.contains("WHEN MATCHED AND HASH(final."), "MERGE must guard update with HASH on the existing row");
+        assertTrue(mergeSQL.contains("<> HASH(ingest."), "MERGE must compare existing HASH against incoming HASH");
+        assertTrue(mergeSQL.contains("HASH(final.id,final.name)"), "HASH must cover all final table columns");
+        assertTrue(mergeSQL.contains("HASH(ingest.id,ingest.name)"), "HASH must cover all ingest columns mapped to final");
     }
 
     @Test

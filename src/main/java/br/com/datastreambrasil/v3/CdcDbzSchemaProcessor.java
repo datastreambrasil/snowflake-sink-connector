@@ -53,7 +53,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             WHERE ih_blockid = '%s'
             and ih_op in ('c', 'r', 'u')) AS ingest ON %s
             WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)
-            WHEN MATCHED THEN UPDATE SET %s""";
+            WHEN MATCHED AND HASH(%s) <> HASH(%s) THEN UPDATE SET %s""";
 
     private static final String COPY_QUERY = "COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE";
     private static final String DELETE_QUERY = """
@@ -202,6 +202,8 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                         String merge = String.format(MERGE_QUERY, tableBaseName, buildExcludeColumns(), ingestTableName,
                                 blockID, buildPkWhereClause(tablePks), String.join(LINE_SEPARATOR_COMMA, finalCols),
                                 String.join(LINE_SEPARATOR_COMMA, finalCols.stream().map(c -> String.format("ingest.%s", c)).toList()),
+                                buildHashExpression("final", finalCols),
+                                buildHashExpression("ingest", finalCols),
                                 buildUpdateColumns(finalCols));
                         LOGGER.debug("Merging statement to final table: {}", merge);
                         stmt.executeLargeUpdate(merge);
@@ -328,6 +330,12 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             columns.add(String.format("final.%s = ingest.%s", column, column));
         }
         return String.join(",", columns);
+    }
+
+    private String buildHashExpression(String alias, List<String> cols) {
+        return String.join(",", cols.stream()
+                .map(col -> String.format("%s.%s", alias, col))
+                .toList());
     }
 
     private String buildExcludeColumns() {
