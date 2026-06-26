@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 
+import static br.com.datastreambrasil.v3.SnowflakeSinkConnector.CFG_FIND_COLUMNS_IN_METADATA;
+
 public abstract class AbstractProcessor {
 
     protected final static Logger LOGGER = LogManager.getLogger(AbstractProcessor.class);
@@ -86,7 +88,7 @@ public abstract class AbstractProcessor {
         configParameters(config);
         setupSnowflakeConnection(config);
 
-        if (config.getBoolean(SnowflakeSinkConnector.CFG_FIND_COLUMNS_IN_METADATA)) {
+        if (config.getBoolean(CFG_FIND_COLUMNS_IN_METADATA)) {
             configMetadata();
         } else {
             configMetadataV2(config);
@@ -144,10 +146,12 @@ public abstract class AbstractProcessor {
             properties.put(CLIENT_METADATA_USE_SESSION_DATABASE, "true");
             properties.put(CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX, "true");
 
-            // Desabilita Arrow, usa JSON como formato de resultado
-            // Resolve ExceptionInInitializerError com sun.misc.Unsafe no Java 17+
-            // Ref: https://docs.snowflake.com/en/developer-guide/jdbc/jdbc-configure
-            properties.put(JDBC_QUERY_RESULT_FORMAT, "JSON");
+            if (!config.getBoolean(CFG_FIND_COLUMNS_IN_METADATA)) {
+                // Desabilita Arrow, usa JSON como formato de resultado
+                // Resolve ExceptionInInitializerError com sun.misc.Unsafe no Java 17+
+                // Ref: https://docs.snowflake.com/en/developer-guide/jdbc/jdbc-configure
+                properties.put(JDBC_QUERY_RESULT_FORMAT, "JSON");
+            }
 
             connection = DriverManager.getConnection(config.getString(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);   // using the provided configuration.
