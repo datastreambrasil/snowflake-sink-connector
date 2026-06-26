@@ -17,7 +17,9 @@ import org.quartz.SimpleScheduleBuilder;
 import org.quartz.TriggerBuilder;
 import org.quartz.impl.StdSchedulerFactory;
 
+import java.io.BufferedWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -307,113 +309,106 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
     protected Path prepareOrderedColumnsBasedOnTargetTable(String blockID, List<String> columnsFromTable) throws Throwable {
         var startTime = System.currentTimeMillis();
-        var stringBuilder = new StringBuilder(buffer.size() * SB_CSV_INITIAL_SIZE);
 
         flushHasDeletedRecords = false;
         flushHasUpdatedRecords = false;
         flushHasInsertedRecords = false;
 
-        boolean loggedDebugForFirstLine = false;
-        for (var recordInBuffer : buffer.values()) {
-            var recordData = buffer.deserializeValue(recordInBuffer);
-            var count = 0;
-            var op = recordData.op();
-
-            if (debeziumOperation.d.toString().equalsIgnoreCase(op)) {
-                flushHasDeletedRecords = true;
-            }
-
-            if (debeziumOperation.c.toString().equalsIgnoreCase(op) || debeziumOperation.r.toString().equalsIgnoreCase(op)) {
-                flushHasInsertedRecords = true;
-            }
-
-            if (debeziumOperation.u.toString().equalsIgnoreCase(op)) {
-                flushHasUpdatedRecords = true;
-            }
-
-            for (String columnFromSnowflakeTable : columnsFromTable) {
-                if (columnFromSnowflakeTable.equalsIgnoreCase(IHBLOCKID)) {
-                    stringBuilder.append(DOUBLE_QUOTE)
-                            .append(blockID)
-                            .append(DOUBLE_QUOTE);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOP)) {
-                    stringBuilder.append(DOUBLE_QUOTE)
-                            .append(recordData.op())
-                            .append(DOUBLE_QUOTE);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHTOPIC)) {
-                    stringBuilder.append(DOUBLE_QUOTE)
-                            .append(recordData.topic())
-                            .append(DOUBLE_QUOTE);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHDATETIME)) {
-                    stringBuilder.append(DOUBLE_QUOTE)
-                            .append(recordData.timestamp())
-                            .append(DOUBLE_QUOTE);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHPARTITION)) {
-                    stringBuilder.append(DOUBLE_QUOTE)
-                            .append(recordData.partition())
-                            .append(DOUBLE_QUOTE);
-                } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOFFSET)) {
-                    stringBuilder.append(DOUBLE_QUOTE)
-                            .append(recordData.offset())
-                            .append(DOUBLE_QUOTE);
-                } else {
-                    Optional<FieldRecord> fieldRecord = recordData.event().stream().filter(field ->
-                            field.name().equalsIgnoreCase(columnFromSnowflakeTable)).findFirst();
-                    if (fieldRecord.isPresent() && fieldRecord.get().data() != null) {
-                        Object valueFromRecord = fieldRecord.get().data();
-                        if (containsAny(columnFromSnowflakeTable, timestampFieldsConvert)) {
-                            var valueFromRecordAsLong = (long) valueFromRecord;
-                            valueFromRecord = LocalDateTime.ofInstant(Instant.ofEpochMilli(valueFromRecordAsLong),
-                                    TimeZone.getDefault().toZoneId()).toString();
-                        } else if (containsAny(columnFromSnowflakeTable, dateFieldsConvert)) {
-                            var valueFromRecordAsLong = (int) valueFromRecord;
-                            var daysInSeconds = valueFromRecordAsLong * 24 * 60 * 60;
-                            valueFromRecord = LocalDate.ofInstant(Instant.ofEpochSecond(daysInSeconds),
-                                    TimeZone.getDefault().toZoneId()).toString();
-                        } else if (containsAny(columnFromSnowflakeTable, timeFieldsConvert)) {
-                            var valueFromRecordAsLong = (long) valueFromRecord;
-                            valueFromRecord = LocalTime.ofNanoOfDay(valueFromRecordAsLong).toString();
-                        }
-
-                        valueFromRecord = valueFromRecord.toString().replaceAll(DOUBLE_QUOTE, REGEX_REPLACEMENT_QUOTE_VALUE);
-                        stringBuilder.append(DOUBLE_QUOTE).append(valueFromRecord).append(DOUBLE_QUOTE);
-                    } else {
-                        LOGGER.warn("Column {} not found on buffer, inserted empty value", columnFromSnowflakeTable);
-                    }
-                }
-
-                if (count < columnsFromTable.size() - 1) {
-                    stringBuilder.append(LINE_SEPARATOR_COMMA);
-                }
-
-                count++;
-            }
-
-            stringBuilder.append(BREAK_LINE);
-            if (!loggedDebugForFirstLine && LOGGER.isDebugEnabled()) {
-                LOGGER.debug("First lines of csv: {}", stringBuilder);
-                loggedDebugForFirstLine = true;
-            }
-        }
-
-        stringBuilder.trimToSize();
-
-        return this.generateTempFile(stringBuilder, startTime);
-    }
-
-    private Path generateTempFile(StringBuilder stringBuilder, long startTime) throws IOException {
         Files.createDirectories(Path.of(String.format("%s/%s", tmpDataFolder, stageName)));
-
         var tmpPath = Path.of(String.format("%s/%s/%s.csv", tmpDataFolder, stageName, UUID.randomUUID()));
         Files.deleteIfExists(tmpPath);
 
-        var resultPath = Files.writeString(tmpPath, stringBuilder.toString(), StandardOpenOption.CREATE);
+        boolean loggedDebugForFirstLine = false;
+        try (var writer = Files.newBufferedWriter(tmpPath, StandardCharsets.UTF_8, StandardOpenOption.CREATE)) {
+            for (var recordInBuffer : buffer.values()) {
+                var recordData = buffer.deserializeValue(recordInBuffer);
+                var count = 0;
+                var op = recordData.op();
 
-        LOGGER.debug("Prepared csv in file in {} ms", System.currentTimeMillis() - startTime);
+                if (debeziumOperation.d.toString().equalsIgnoreCase(op)) {
+                    flushHasDeletedRecords = true;
+                }
 
-        stringBuilder.delete(0, stringBuilder.length());
+                if (debeziumOperation.c.toString().equalsIgnoreCase(op) || debeziumOperation.r.toString().equalsIgnoreCase(op)) {
+                    flushHasInsertedRecords = true;
+                }
 
-        return resultPath;
+                if (debeziumOperation.u.toString().equalsIgnoreCase(op)) {
+                    flushHasUpdatedRecords = true;
+                }
+
+                var lineBuilder = new StringBuilder();
+                for (String columnFromSnowflakeTable : columnsFromTable) {
+                    if (columnFromSnowflakeTable.equalsIgnoreCase(IHBLOCKID)) {
+                        lineBuilder.append(DOUBLE_QUOTE)
+                                .append(blockID)
+                                .append(DOUBLE_QUOTE);
+                    } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOP)) {
+                        lineBuilder.append(DOUBLE_QUOTE)
+                                .append(recordData.op())
+                                .append(DOUBLE_QUOTE);
+                    } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHTOPIC)) {
+                        lineBuilder.append(DOUBLE_QUOTE)
+                                .append(recordData.topic())
+                                .append(DOUBLE_QUOTE);
+                    } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHDATETIME)) {
+                        lineBuilder.append(DOUBLE_QUOTE)
+                                .append(recordData.timestamp())
+                                .append(DOUBLE_QUOTE);
+                    } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHPARTITION)) {
+                        lineBuilder.append(DOUBLE_QUOTE)
+                                .append(recordData.partition())
+                                .append(DOUBLE_QUOTE);
+                    } else if (columnFromSnowflakeTable.equalsIgnoreCase(IHOFFSET)) {
+                        lineBuilder.append(DOUBLE_QUOTE)
+                                .append(recordData.offset())
+                                .append(DOUBLE_QUOTE);
+                    } else {
+                        Optional<FieldRecord> fieldRecord = recordData.event().stream().filter(field ->
+                                field.name().equalsIgnoreCase(columnFromSnowflakeTable)).findFirst();
+                        if (fieldRecord.isPresent() && fieldRecord.get().data() != null) {
+                            Object valueFromRecord = fieldRecord.get().data();
+                            if (containsAny(columnFromSnowflakeTable, timestampFieldsConvert)) {
+                                var valueFromRecordAsLong = (long) valueFromRecord;
+                                valueFromRecord = LocalDateTime.ofInstant(Instant.ofEpochMilli(valueFromRecordAsLong),
+                                        TimeZone.getDefault().toZoneId()).toString();
+                            } else if (containsAny(columnFromSnowflakeTable, dateFieldsConvert)) {
+                                var valueFromRecordAsLong = (int) valueFromRecord;
+                                var daysInSeconds = valueFromRecordAsLong * 24 * 60 * 60;
+                                valueFromRecord = LocalDate.ofInstant(Instant.ofEpochSecond(daysInSeconds),
+                                        TimeZone.getDefault().toZoneId()).toString();
+                            } else if (containsAny(columnFromSnowflakeTable, timeFieldsConvert)) {
+                                var valueFromRecordAsLong = (long) valueFromRecord;
+                                valueFromRecord = LocalTime.ofNanoOfDay(valueFromRecordAsLong).toString();
+                            }
+
+                            valueFromRecord = valueFromRecord.toString().replaceAll(DOUBLE_QUOTE, REGEX_REPLACEMENT_QUOTE_VALUE);
+                            lineBuilder.append(DOUBLE_QUOTE).append(valueFromRecord).append(DOUBLE_QUOTE);
+                        } else {
+                            LOGGER.warn("Column {} not found on buffer, inserted empty value", columnFromSnowflakeTable);
+                        }
+                    }
+
+                    if (count < columnsFromTable.size() - 1) {
+                        lineBuilder.append(LINE_SEPARATOR_COMMA);
+                    }
+
+                    count++;
+                }
+
+                lineBuilder.append(BREAK_LINE);
+
+                if (!loggedDebugForFirstLine && LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("First line of csv: {}", lineBuilder);
+                    loggedDebugForFirstLine = true;
+                }
+
+                writer.write(lineBuilder.toString());
+            }
+        }
+
+        LOGGER.debug("Prepared csv file in {} ms", System.currentTimeMillis() - startTime);
+        return tmpPath;
     }
 
     private boolean containsAny(String checkValue, List<String> values) {
