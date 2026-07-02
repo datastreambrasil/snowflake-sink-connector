@@ -109,7 +109,6 @@ public class SnowflakeSinkConnector extends SinkConnector {
         .define(COPY_ONLY, ConfigDef.Type.BOOLEAN, false,
                 ConfigDef.Importance.HIGH,
                 "If true, we will only copy the data to snowflake, without inserting it into the final table.")
-        .define(FINAL_TABLE_FIELD_NAMES, ConfigDef.Type.LIST, List.of(),
         .define(CFG_FIND_COLUMNS_IN_METADATA, ConfigDef.Type.BOOLEAN, Boolean.FALSE,
                 ConfigDef.Importance.HIGH,
                 "Define whether to retrieve column names from the metadata or by querying the information schema.")      
