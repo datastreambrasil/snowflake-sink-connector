@@ -35,6 +35,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_BUFFER_INITIAL_CAPACITY = "buffer_initial_capacity";
     protected static final String CFG_FIND_COLUMNS_IN_METADATA = "find_columns_in_metadata";
     protected static final String CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS = "exclude_ingest_additional_fields";
+    protected static final String COPY_ONLY = "copy_only";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -105,9 +106,13 @@ public class SnowflakeSinkConnector extends SinkConnector {
         .define(CFG_BUFFER_INITIAL_CAPACITY, ConfigDef.Type.INT, 1000000,
                 ConfigDef.Importance.HIGH,
                 "The initial buffer capacity.")
+        .define(COPY_ONLY, ConfigDef.Type.BOOLEAN, false,
+                ConfigDef.Importance.HIGH,
+                "If true, we will only copy the data to snowflake, without inserting it into the final table.")
+        .define(FINAL_TABLE_FIELD_NAMES, ConfigDef.Type.LIST, List.of(),
         .define(CFG_FIND_COLUMNS_IN_METADATA, ConfigDef.Type.BOOLEAN, Boolean.FALSE,
                 ConfigDef.Importance.HIGH,
-                "Define whether to retrieve column names from the metadata or by querying the information schema.")
+                "Define whether to retrieve column names from the metadata or by querying the information schema.")      
         .define(CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS, ConfigDef.Type.LIST, List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID"),
                 ConfigDef.Importance.HIGH,
                 "Defines which fields from the ingest table should be disregarded in the final table.");

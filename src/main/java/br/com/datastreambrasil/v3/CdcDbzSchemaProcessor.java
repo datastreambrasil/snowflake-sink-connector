@@ -147,15 +147,19 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
 
                 var startTimeStatement = System.currentTimeMillis();
                 try (var stmt = connection.createStatement()) {
-
-                    //copy everything to ingest
-                    String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE", ingestTableName,
-                            String.join(",", columnsFromMetadata), stageName, destFileName);
+                    
+                    String copyInto = String.format("COPY INTO %s (%s) FROM @%s/%s.gz PURGE = %s", ingestTableName,
+                            String.join(",", columnsFromMetadata), stageName, destFileName, copyOnly ? "FALSE" : "TRUE");
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
                     stmt.executeLargeUpdate(copyInto);
 
                     // Delete temp file after SnowFlake upload and COPY to ingest table and clear buffer.
                     this.discardData(tmpFilePathToInsert);
+
+                    if (copyOnly) {
+                        LOGGER.debug("COPY_ONLY is true, skipping insert/update/delete in final table.");
+                        return;
+                    }
 
                     if (flushHasInsertedRecords || flushHasUpdatedRecords) {
                         //insert/update in final table

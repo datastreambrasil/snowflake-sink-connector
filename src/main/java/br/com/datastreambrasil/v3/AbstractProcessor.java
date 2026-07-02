@@ -38,6 +38,7 @@ public abstract class AbstractProcessor {
     protected List<String> timeFieldsConvert = new ArrayList<>();
     protected CompressedMap<SnowflakeRecord> buffer;
     protected String tmpDataFolder;
+    protected boolean copyOnly = false;
 
     protected static final String AFTER = "after";
     protected static final String BEFORE = "before";
@@ -131,6 +132,7 @@ public abstract class AbstractProcessor {
         tmpDataFolder = config.getString(SnowflakeSinkConnector.CFG_TMP_DATA_FOLDER);
 
         buffer = new CompressedMap<>(new KryoFactory(), config.getInt(SnowflakeSinkConnector.CFG_BUFFER_INITIAL_CAPACITY));
+        copyOnly = config.getBoolean(SnowflakeSinkConnector.COPY_ONLY);
     }
 
     protected void setupSnowflakeConnection(AbstractConfig config) {
