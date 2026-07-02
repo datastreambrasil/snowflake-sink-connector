@@ -248,8 +248,8 @@ class CdcDbzSchemaProcessorTest {
         verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
         verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
         assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
-        assertTrue(Files.isDirectory(Path.of("/mnt/data/csv_data_to_stage/test_stage")));
-        assertTrue(Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList().isEmpty());
+        assertTrue(Files.isDirectory(Path.of("/tmp/data/csv_data_to_stage/test_stage")));
+        assertTrue(Files.list(Path.of("/tmp/data/csv_data_to_stage/test_stage")).toList().isEmpty());
     }
 
     @Test
