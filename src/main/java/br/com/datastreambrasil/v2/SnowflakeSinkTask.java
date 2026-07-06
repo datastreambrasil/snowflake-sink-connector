@@ -149,16 +149,20 @@ public class SnowflakeSinkTask extends SinkTask {
             properties.put(CLIENT_METADATA_USE_SESSION_DATABASE, "true");
             properties.put(CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX, "true");
 
-            // Desabilita Arrow, usa JSON como formato de resultado
-            // Resolve ExceptionInInitializerError com sun.misc.Unsafe no Java 17+
-            // Ref: https://docs.snowflake.com/en/developer-guide/jdbc/jdbc-configure
-            properties.put(JDBC_QUERY_RESULT_FORMAT, "JSON");
-
+            if (!config.getBoolean(SnowflakeSinkConnector.FIND_COLUMNS_IN_METADATA)) {
+                // Desabilita Arrow, usa JSON como formato de resultado
+                // Resolve ExceptionInInitializerError com sun.misc.Unsafe no Java 17+
+                // Ref: https://docs.snowflake.com/en/developer-guide/jdbc/jdbc-configure
+                properties.put(JDBC_QUERY_RESULT_FORMAT, "JSON");
+            }
             connection = DriverManager.getConnection(map.get(SnowflakeSinkConnector.CFG_URL), properties);
             snowflakeConnection = connection.unwrap(SnowflakeConnection.class);
 
             //fill columns
-            if (config.getBoolean(SnowflakeSinkConnector.FIND_COLUMNS_IN_METADATA)) {
+            if (!config.getList(SnowflakeSinkConnector.CFG_TABLE_FIELDS).isEmpty()) {
+                columnsFinalTable = getColumnsFromConfig(config.getList(SnowflakeSinkConnector.CFG_TABLE_FIELDS));
+            }
+            else if (config.getBoolean(SnowflakeSinkConnector.FIND_COLUMNS_IN_METADATA)) {
                 columnsFinalTable = getColumnsFromMetadata(tableName);
             } else {
                 columnsFinalTable = getColumnsFromMetadataInformationSchema(tableName);
@@ -194,6 +198,11 @@ public class SnowflakeSinkTask extends SinkTask {
             LOGGER.error("Error while starting Snowflake connector", e);
             throw new RuntimeException("Error while starting Snowflake connector", e);
         }
+    }
+
+    private List<String> getColumnsFromConfig(List<String> fields) {
+        fields.removeAll(ignoreColumns);
+        return  fields;
     }
 
     @Override

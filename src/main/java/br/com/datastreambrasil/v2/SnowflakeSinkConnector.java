@@ -26,6 +26,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_PAYLOAD_CDC_FORMAT = "payload_cdc_format";
     protected static final String CFG_IGNORE_COLUMNS = "ignore_columns";
     protected static final String FIND_COLUMNS_IN_METADATA = "find_columns_in_metadata";
+    protected static final String CFG_TABLE_FIELDS = "table_fields";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -83,7 +84,10 @@ public class SnowflakeSinkConnector extends SinkConnector {
                     "If we don't receive any event for this amount of time, we will truncate the table in snowflake")
             .define(FIND_COLUMNS_IN_METADATA, ConfigDef.Type.BOOLEAN, Boolean.FALSE,
                     ConfigDef.Importance.HIGH,
-                    "Define whether to retrieve column names from the metadata or by querying the information schema.");
+                    "Define whether to retrieve column names from the metadata or by querying the information schema.")
+            .define(CFG_TABLE_FIELDS, ConfigDef.Type.LIST, List.of(),
+                    ConfigDef.Importance.HIGH,
+                    "Defines the names of the fields of table to be processed.");
 
     private Map<String, String> props;
 
