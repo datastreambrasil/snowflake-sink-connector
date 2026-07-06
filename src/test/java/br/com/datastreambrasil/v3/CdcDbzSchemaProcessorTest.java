@@ -361,6 +361,58 @@ class CdcDbzSchemaProcessorTest {
     }
 
     @Test
+    void testFlushCopyOnlyTrue_OnlyCopyExecutedWithPurgeFalse() throws SQLException, IOException {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.findInColumnsMetadata = true;
+        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
+        var statementMock = prepareToFlush(processor);
+        processor.copyOnly = true;
+        processor.put(generateCreateEvents(dt, "1", "2"));
+        processor.put(generateUpdateEvents(dt, "new", "3"));
+        processor.put(generateDeleteEvents(dt, "4"));
+        processor.columnsIngestTable.put("TEST_TABLE_INGEST",
+                List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"));
+        processor.columnsFinalTable.put("TEST_TABLE",
+                List.of("id", "name", "timestamp", "time", "date", "desc"));
+
+        processor.flush(null);
+
+        var sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(statementMock, times(1)).executeLargeUpdate(sqlCaptor.capture());
+        var executedSQLs = sqlCaptor.getAllValues();
+        assertEquals(1, executedSQLs.size(), "Only COPY should be executed when copyOnly=true");
+        assertTrue(executedSQLs.get(0).startsWith("COPY"), "The only executed statement should be COPY");
+        assertTrue(executedSQLs.get(0).contains("PURGE = 'FALSE'"), "COPY query must use PURGE = 'FALSE' when copyOnly=true");
+        assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
+    }
+
+    @Test
+    void testFlushCopyOnlyFalse_CopyQueryContainsPurgeTrue() throws SQLException, IOException {
+        var processor = new CdcDbzSchemaProcessor();
+        processor.findInColumnsMetadata = true;
+        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
+        var statementMock = prepareToFlush(processor);
+        // copyOnly defaults to false via configParameters(generateConfig())
+        processor.put(generateCreateEvents(dt, "1", "2"));
+        processor.put(generateUpdateEvents(dt, "new", "3"));
+        processor.put(generateDeleteEvents(dt, "4"));
+        processor.columnsIngestTable.put("TEST_TABLE_INGEST",
+                List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"));
+        processor.columnsFinalTable.put("TEST_TABLE",
+                List.of("id", "name", "timestamp", "time", "date", "desc"));
+
+        processor.flush(null);
+
+        var sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(statementMock, times(3)).executeLargeUpdate(sqlCaptor.capture()); // COPY + MERGE + DELETE
+        var copySQL = sqlCaptor.getAllValues().stream()
+                .filter(sql -> sql.startsWith("COPY"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("COPY statement not generated"));
+        assertTrue(copySQL.contains("PURGE = 'TRUE'"), "COPY query must use PURGE = 'TRUE' when copyOnly=false");
+    }
+
+    @Test
     void testFlushWithSuccess_MultiTables() throws SQLException {
         var processor = new CdcDbzSchemaProcessor();
         processor.processMultiTables = true;

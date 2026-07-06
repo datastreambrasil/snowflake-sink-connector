@@ -55,7 +55,7 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
             WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)
             WHEN MATCHED AND HASH(%s) <> HASH(%s) THEN UPDATE SET %s""";
 
-    private static final String COPY_QUERY = "COPY INTO %s (%s) FROM @%s/%s.gz PURGE = TRUE";
+    private static final String COPY_QUERY = "COPY INTO %s (%s) FROM @%s/%s.gz PURGE = '%s'";
     private static final String DELETE_QUERY = """
             DELETE FROM %s as final USING (SELECT %s FROM %s
             WHERE ih_blockid = '%s' and ih_op = 'd') AS ingest
@@ -190,13 +190,18 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 var startTimeStatement = System.currentTimeMillis();
                 try (var stmt = connection.createStatement()) {
                     String copyInto = String.format(COPY_QUERY, ingestTableName,
-                            String.join(LINE_SEPARATOR_COMMA, ingestCols), stageName, destFileName);
+                            String.join(LINE_SEPARATOR_COMMA, ingestCols), stageName, destFileName, copyOnly ? "FALSE" : "TRUE");
 
                     LOGGER.debug("Copying statement to ingest table: {}", copyInto);
 
                     stmt.executeLargeUpdate(copyInto);
 
                     this.discardData(tmpFilePathToInsert);
+
+                    if (copyOnly) {
+                        LOGGER.debug("COPY_ONLY is true, skipping insert/update/delete in final table.");
+                        return;
+                    }
 
                     if (flushHasInsertedRecords || flushHasUpdatedRecords) {
                         String merge = String.format(MERGE_QUERY, tableBaseName, buildExcludeColumns(), ingestTableName,
