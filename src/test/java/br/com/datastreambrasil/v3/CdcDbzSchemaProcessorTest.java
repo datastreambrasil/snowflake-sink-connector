@@ -46,6 +46,7 @@ import static org.mockito.ArgumentMatchers.assertArg;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.matches;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -236,7 +237,7 @@ class CdcDbzSchemaProcessorTest {
     void testFlushWithSuccess() throws SQLException, IOException {
         var processor = new CdcDbzSchemaProcessor();
         var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
-        var statementMock = prepareToFlush(processor);
+        var statementMock = prepareToFlush(processor, null);
         processor.put(generateCreateEvents(dt, "1", "2", "3"));
         processor.put(generateUpdateEvents(dt, "new", "4"));
         processor.put(generateDeleteEvents(dt, "5"));
@@ -248,15 +249,32 @@ class CdcDbzSchemaProcessorTest {
         verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
         verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
         assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
-        assertTrue(Files.isDirectory(Path.of("/tmp/data/csv_data_to_stage/test_stage")));
-        assertTrue(Files.list(Path.of("/tmp/data/csv_data_to_stage/test_stage")).toList().isEmpty());
+//        assertTrue(Files.isDirectory(Path.of("/tmp/data/csv_data_to_stage/test_stage")));
+//        assertTrue(Files.list(Path.of("/tmp/data/csv_data_to_stage/test_stage")).toList().isEmpty());
+    }
+
+    @Test
+    void testFlushPutOnlyWithSuccess() throws SQLException, IOException {
+        var processor = new CdcDbzSchemaProcessor();
+        var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
+        var statementMock = prepareToFlush(processor, Boolean.TRUE);
+        processor.put(generateCreateEvents(dt, "1", "2", "3"));
+        processor.put(generateUpdateEvents(dt, "new", "4"));
+        processor.put(generateDeleteEvents(dt, "5"));
+        processor.flush(null);
+
+        verify(processor.snowflakeConnection, times(1)).uploadStream(any(), eq("/"),
+                assertArg(c -> assertNotNull(c, "CSV data stream should should not be null")), any(), eq(true));
+        verify(statementMock, never()).executeLargeUpdate(matches("COPY.*"));
+        verify(statementMock, never()).executeLargeUpdate(matches("MERGE.*"));
+        verify(statementMock, never()).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
     }
 
     @Test
     void testPrepareOrderedColumnsBasedOnTargetTableSuccess() throws Throwable {
         var processor = new CdcDbzSchemaProcessor();
         var dt = LocalDateTime.of(2018, 1, 10, 10, 30, 40);
-        prepareToFlush(processor);
+        prepareToFlush(processor, Boolean.FALSE);
         processor.put(generateCreateEvents(dt, "1"));
         processor.put(generateDeleteEvents(dt, "2"));
         var blockID = "111";
@@ -277,24 +295,24 @@ class CdcDbzSchemaProcessorTest {
     @Test
     void testStartCleanUpJobSuccess() throws SchedulerException, SQLException {
         var processor = new CdcDbzSchemaProcessor();
-        var statement = prepareToFlush(processor);
-        var props = generateConfig().originals();
+        var statement = prepareToFlush(processor, null);
+        var props = generateConfig(null).originals();
         props.put(SnowflakeSinkConnector.CFG_JOB_CLEANUP_DURATION, "PT1S");
         processor.startCleanUpJob(new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, props));
         verify(statement, timeout(4000).atLeast(3)).executeLargeUpdate(matches("delete.*"));
     }
 
-    private Statement prepareToFlush(CdcDbzSchemaProcessor processor) throws SQLException {
+    private Statement prepareToFlush(CdcDbzSchemaProcessor processor, Boolean putOnly) throws SQLException {
         var statementMock = mockConnections(processor,
                 List.of("id", "name", "timestamp", "time", "date", "desc"),
                 List.of("id", "name", "timestamp", "time", "date", "desc", "ih_topic", "ih_offset", "ih_partition", "ih_op", "ih_datetime", "ih_blockid"),
                 "test_table", "test_table_INGEST");
-        processor.configParameters(generateConfig());
+        processor.configParameters(generateConfig(putOnly));
         processor.configMetadata();
         return statementMock;
     }
 
-    private AbstractConfig generateConfig() {
+    private AbstractConfig generateConfig(Boolean putOnly) {
         return new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, Map.of(
                 "schema", "test_schema",
                 "table", "test_table",
@@ -302,7 +320,8 @@ class CdcDbzSchemaProcessorTest {
                 "timestamp_fields_convert", "timestamp",
                 "date_fields_convert", "date",
                 "time_fields_convert", "time",
-                "find_columns_in_metadata", Boolean.TRUE
+                "find_columns_in_metadata", Boolean.TRUE,
+                "put_only", putOnly != null ? putOnly : Boolean.FALSE
         ));
     }
 

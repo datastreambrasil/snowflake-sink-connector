@@ -145,6 +145,12 @@ public class CdcDbzSchemaProcessor extends AbstractProcessor {
                 var endTimeUpload = System.currentTimeMillis();
                 LOGGER.debug("Uploaded {} records in {} ms", buffer.size(), endTimeUpload - startTimeUpload);
 
+                if (putOnly) {
+                    LOGGER.debug("PUT_ONLY is true, skipping copy/insert/update/delete in the tables.");
+                    this.discardData(tmpFilePathToInsert);
+                    return;
+                }
+
                 var startTimeStatement = System.currentTimeMillis();
                 try (var stmt = connection.createStatement()) {
                     

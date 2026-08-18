@@ -36,6 +36,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_FIND_COLUMNS_IN_METADATA = "find_columns_in_metadata";
     protected static final String CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS = "exclude_ingest_additional_fields";
     protected static final String COPY_ONLY = "copy_only";
+    protected static final String PUT_ONLY = "put_only";
 
     /*
      * For some use cases we need to load all data again, each time. So we have two
@@ -114,7 +115,10 @@ public class SnowflakeSinkConnector extends SinkConnector {
                 "Define whether to retrieve column names from the metadata or by querying the information schema.")      
         .define(CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS, ConfigDef.Type.LIST, List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID"),
                 ConfigDef.Importance.HIGH,
-                "Defines which fields from the ingest table should be disregarded in the final table.");
+                "Defines which fields from the ingest table should be disregarded in the final table.")
+        .define(PUT_ONLY, ConfigDef.Type.BOOLEAN, false,
+                ConfigDef.Importance.HIGH,
+                "If true, we will only put the file stage to snowflake, without copy and inserting it into the tables.");
 
     private Map<String, String> props;
 
