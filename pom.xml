@@ -33,6 +33,18 @@
             <version>4.1.2</version>
         </dependency>
 
+        <!--
+          The flat_json profile reads the row out of the record value. JsonConverter hands it over
+          already deserialized as a Map, but StringConverter and ByteArrayConverter hand over text,
+          and nothing on the classpath parses JSON: snowflake-jdbc relocates its own copy of
+          Jackson into an internal package.
+        -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.19.4</version>
+        </dependency>
+
         <!-- logs -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
@@ -75,6 +87,16 @@
                 <artifactId>snowflake-jdbc</artifactId>
             <version>3.28.0</version>
         </dependency>
+        <!--
+          Snowpipe Streaming, high-performance architecture (v4).
+          Ships a Rust core under rust/<platform>/ inside the jar, so the runtime image must be
+          glibc >= 2.26 (UBI/Debian are fine, Alpine/musl is not).
+        -->
+        <dependency>
+            <groupId>com.snowflake</groupId>
+            <artifactId>snowpipe-streaming</artifactId>
+            <version>1.8.0</version>
+        </dependency>
         <dependency>
             <groupId>org.quartz-scheduler</groupId>
             <artifactId>quartz</artifactId>
@@ -97,6 +119,20 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+                <configuration>
+                    <!--
+                      The v3 tests assert timestamps in the timezone they were written in, because
+                      the conversions read the JVM's default timezone by design - changing that
+                      would shift existing values. Green on a developer machine in Brazil, red on
+                      a CI runner in UTC. Pinning it makes the build say the same thing everywhere.
+                    -->
+                    <argLine>-Duser.timezone=America/Sao_Paulo</argLine>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.6.0</version>
                 <executions>
@@ -105,6 +141,43 @@
                         <goals>
                             <goal>shade</goal>
                         </goals>
+                        <configuration>
+                            <relocations>
+                                <!--
+                                  Jackson has to be invisible outside this jar. The Connect worker
+                                  brings its own - Kafka 4.x even configures log4j2 from a YAML
+                                  file, which loads jackson-dataformat-yaml from the worker - and
+                                  a plugin classloader is child first. An unrelocated copy here
+                                  means YAMLFactory (worker) meets JsonFactory (plugin) and the
+                                  task dies at class init with "VerifyError: Bad type on operand
+                                  stack", before the connector runs a single line.
+                                -->
+                                <relocation>
+                                    <pattern>com.fasterxml.jackson</pattern>
+                                    <shadedPattern>br.com.datastreambrasil.shaded.jackson</shadedPattern>
+                                </relocation>
+                            </relocations>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <!--
+                                          The Snowpipe Streaming jar is signed. Copying its
+                                          signature files into the uber-jar makes the JVM reject
+                                          the classes with "Invalid signature file digest".
+                                        -->
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                            <transformers>
+                                <transformer
+                                    implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>

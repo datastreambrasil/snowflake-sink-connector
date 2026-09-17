@@ -12,6 +12,7 @@ import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.quartz.SchedulerException;
 
 import java.io.IOException;
@@ -52,6 +53,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class CdcDbzSchemaProcessorTest {
+
+    /** Staging directory for the test, instead of the production default under /mnt/data. */
+    @TempDir
+    static Path tmpDataFolder;
 
     private static Schema valueAfterBeforeSchema;
     private static Schema valueSchema;
@@ -248,8 +253,11 @@ class CdcDbzSchemaProcessorTest {
         verify(statementMock, times(1)).executeLargeUpdate(matches("MERGE.*"));
         verify(statementMock, times(1)).executeLargeUpdate(matches("DELETE(.*)final.id = ingest.id"));
         assertEquals(0, processor.buffer.size(), "Buffer should be empty after flush");
-        assertTrue(Files.isDirectory(Path.of("/tmp/data/csv_data_to_stage/test_stage")));
-        assertTrue(Files.list(Path.of("/tmp/data/csv_data_to_stage/test_stage")).toList().isEmpty());
+        var stageFolder = Path.of(processor.tmpDataFolder, processor.stageName);
+        assertTrue(Files.isDirectory(stageFolder));
+        try (var staged = Files.list(stageFolder)) {
+            assertTrue(staged.toList().isEmpty());
+        }
     }
 
     @Test
@@ -267,9 +275,10 @@ class CdcDbzSchemaProcessorTest {
                 "2","Name 2","2018-01-10T08:30:40","10:30:40","2018-01-09",,"test_topic","0","0","d","111",(?<msgtimestampd>.*)
                 """);
         var fileData = IOUtils.toString(Files.newInputStream(csvBaos), "UTF-8");
-        var files = Files.list(Path.of("/mnt/data/csv_data_to_stage/test_stage")).toList();
-        for (Path f : files) {
-            Files.deleteIfExists(Path.of(f.toFile().getAbsolutePath()));
+        try (var staged = Files.list(Path.of(processor.tmpDataFolder, processor.stageName))) {
+            for (Path f : staged.toList()) {
+                Files.deleteIfExists(f);
+            }
         }
         assertTrue(pattern.matcher(fileData).find(), String.format("CSV data [%s] should match with regex %s", fileData, pattern.pattern()));
     }
@@ -299,6 +308,9 @@ class CdcDbzSchemaProcessorTest {
                 "schema", "test_schema",
                 "table", "test_table",
                 "stage", "test_stage",
+                // without this the processor writes to the default /mnt/data/csv_data_to_stage,
+                // which a CI runner cannot create: the whole build fails with AccessDenied
+                "tmp_data_folder", tmpDataFolder.toString(),
                 "timestamp_fields_convert", "timestamp",
                 "date_fields_convert", "date",
                 "time_fields_convert", "time",
